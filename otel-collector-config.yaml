@@ -38,17 +38,56 @@ processors:
   resourcedetection:
     detectors: [env, system]
     timeout: 2s
-  # ========== 新增：从日志 body 中提取 trace_id/span_id 到 attributes ==========
+  #    新增：从日志 body 中提取 trace_id/span_id 到 attributes   
   transform/logs:
     log_statements:
       - context: log
         statements:
-          # 如果 body 是字符串，解析 JSON 后提取
+          # trace 关联 
           - set(attributes["trace_id"], ParseJSON(body)["trace_id"]) where IsString(body)
           - set(attributes["span_id"], ParseJSON(body)["span_id"]) where IsString(body)
-          # 如果 body 已经是 map，直接提取
           - set(attributes["trace_id"], body["trace_id"]) where IsMap(body)
           - set(attributes["span_id"], body["span_id"]) where IsMap(body)
+
+          #   告警字段 
+          - set(attributes["log_type"], ParseJSON(body)["log_type"]) where IsString(body)
+          - set(attributes["expected"], ParseJSON(body)["expected"]) where IsString(body)
+          - set(attributes["log_type"], body["log_type"]) where IsMap(body)
+          - set(attributes["expected"], body["expected"]) where IsMap(body)
+
+          #   服务/环境  
+          - set(attributes["service.name"], ParseJSON(body)["service.name"]) where IsString(body)
+          - set(attributes["service_name"], ParseJSON(body)["service_name"]) where IsString(body)
+          - set(attributes["env"], ParseJSON(body)["env"]) where IsString(body)
+          - set(attributes["request_id"], ParseJSON(body)["request_id"]) where IsString(body)
+          - set(attributes["service.name"], body["service.name"]) where IsMap(body)
+          - set(attributes["service_name"], body["service_name"]) where IsMap(body)
+          - set(attributes["env"], body["env"]) where IsMap(body)
+          - set(attributes["request_id"], body["request_id"]) where IsMap(body)
+
+          #   HTTP 请求  
+          - set(attributes["method"], ParseJSON(body)["method"]) where IsString(body)
+          - set(attributes["path"], ParseJSON(body)["path"]) where IsString(body)
+          - set(attributes["status_code"], ParseJSON(body)["status_code"]) where IsString(body)
+          - set(attributes["latency"], ParseJSON(body)["latency"]) where IsString(body)
+          - set(attributes["is_stream"], ParseJSON(body)["is_stream"]) where IsString(body)
+          - set(attributes["client_ip"], ParseJSON(body)["client_ip"]) where IsString(body)
+          - set(attributes["log_source"], ParseJSON(body)["log_source"]) where IsString(body)
+          - set(attributes["method"], body["method"]) where IsMap(body)
+          - set(attributes["path"], body["path"]) where IsMap(body)
+          - set(attributes["status_code"], body["status_code"]) where IsMap(body)
+          - set(attributes["latency"], body["latency"]) where IsMap(body)
+          - set(attributes["is_stream"], body["is_stream"]) where IsMap(body)
+          - set(attributes["client_ip"], body["client_ip"]) where IsMap(body)
+          - set(attributes["log_source"], body["log_source"]) where IsMap(body)
+
+          #   Tool/Agent 业务  
+          - set(attributes["tool"], ParseJSON(body)["tool"]) where IsString(body)
+          - set(attributes["ref"], ParseJSON(body)["ref"]) where IsString(body)
+          - set(attributes["session_id"], ParseJSON(body)["session_id"]) where IsString(body)
+          - set(attributes["tool"], body["tool"]) where IsMap(body)
+          - set(attributes["ref"], body["ref"]) where IsMap(body)
+          - set(attributes["session_id"], body["session_id"]) where IsMap(body)
   # 保留原有 Span 指标处理器
   signozspanmetrics/delta:
     metrics_exporter: signozclickhousemetrics
