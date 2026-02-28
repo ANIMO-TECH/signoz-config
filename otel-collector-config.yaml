@@ -49,10 +49,10 @@ processors:
           - set(attributes["trace_id"], body["trace_id"]) where IsMap(body)
           - set(attributes["span_id"], body["span_id"]) where IsMap(body)
 
-          #   告警字段 
-          - set(attributes["log_type"], ParseJSON(body)["log_type"]) where IsString(body)
+          # ===== 告警字段 =====
+          - set(attributes["alert"], ParseJSON(body)["alert"]) where IsString(body)
           - set(attributes["expected"], ParseJSON(body)["expected"]) where IsString(body)
-          - set(attributes["log_type"], body["log_type"]) where IsMap(body)
+          - set(attributes["alert"], body["alert"]) where IsMap(body)
           - set(attributes["expected"], body["expected"]) where IsMap(body)
 
           #   服务/环境  
