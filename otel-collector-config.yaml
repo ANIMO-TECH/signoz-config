@@ -88,6 +88,40 @@ processors:
           - set(attributes["tool"], body["tool"]) where IsMap(body)
           - set(attributes["ref"], body["ref"]) where IsMap(body)
           - set(attributes["session_id"], body["session_id"]) where IsMap(body)
+
+          # ===== 业务观测字段 (biz_outcome / gateway / platform) =====
+          - set(attributes["api_name"], ParseJSON(body)["api_name"]) where IsString(body)
+          - set(attributes["module"], ParseJSON(body)["module"]) where IsString(body)
+          - set(attributes["success"], ParseJSON(body)["success"]) where IsString(body)
+          - set(attributes["error_type"], ParseJSON(body)["error_type"]) where IsString(body)
+          - set(attributes["user_id"], ParseJSON(body)["user_id"]) where IsString(body)
+          - set(attributes["api_name"], body["api_name"]) where IsMap(body)
+          - set(attributes["module"], body["module"]) where IsMap(body)
+          - set(attributes["success"], body["success"]) where IsMap(body)
+          - set(attributes["error_type"], body["error_type"]) where IsMap(body)
+          - set(attributes["user_id"], body["user_id"]) where IsMap(body)
+
+          # ===== 网关观测字段 (gateway outcome) =====
+          - set(attributes["model_name"], ParseJSON(body)["model_name"]) where IsString(body)
+          - set(attributes["channel_id"], ParseJSON(body)["channel_id"]) where IsString(body)
+          - set(attributes["channel_name"], ParseJSON(body)["channel_name"]) where IsString(body)
+          - set(attributes["use_channel"], ParseJSON(body)["use_channel"]) where IsString(body)
+          - set(attributes["retry_count"], ParseJSON(body)["retry_count"]) where IsString(body)
+          - set(attributes["fallback_triggered"], ParseJSON(body)["fallback_triggered"]) where IsString(body)
+          - set(attributes["frt_ms"], ParseJSON(body)["frt_ms"]) where IsString(body)
+          - set(attributes["prompt_tokens"], ParseJSON(body)["prompt_tokens"]) where IsString(body)
+          - set(attributes["completion_tokens"], ParseJSON(body)["completion_tokens"]) where IsString(body)
+          - set(attributes["group"], ParseJSON(body)["group"]) where IsString(body)
+          - set(attributes["model_name"], body["model_name"]) where IsMap(body)
+          - set(attributes["channel_id"], body["channel_id"]) where IsMap(body)
+          - set(attributes["channel_name"], body["channel_name"]) where IsMap(body)
+          - set(attributes["use_channel"], body["use_channel"]) where IsMap(body)
+          - set(attributes["retry_count"], body["retry_count"]) where IsMap(body)
+          - set(attributes["fallback_triggered"], body["fallback_triggered"]) where IsMap(body)
+          - set(attributes["frt_ms"], body["frt_ms"]) where IsMap(body)
+          - set(attributes["prompt_tokens"], body["prompt_tokens"]) where IsMap(body)
+          - set(attributes["completion_tokens"], body["completion_tokens"]) where IsMap(body)
+          - set(attributes["group"], body["group"]) where IsMap(body)
   # 保留原有 Span 指标处理器
   signozspanmetrics/delta:
     metrics_exporter: signozclickhousemetrics
