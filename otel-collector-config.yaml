@@ -52,6 +52,13 @@ processors:
           # ===== severity 提取到 OTLP 标准字段 =====
           - set(severity_text, ParseJSON(body)["severity_text"]) where IsString(body)
           - set(severity_text, body["severity_text"]) where IsMap(body)
+          # 归一化大写为小写（DotAI 输出 INFO/ERROR，统一为 info/error）
+          - set(severity_text, "debug") where severity_text == "DEBUG"
+          - set(severity_text, "info") where severity_text == "INFO"
+          - set(severity_text, "warn") where severity_text == "WARN" or severity_text == "WARNING"
+          - set(severity_text, "error") where severity_text == "ERROR"
+          - set(severity_text, "fatal") where severity_text == "FATAL"
+          # 设置 severity_number
           - set(severity_number, SEVERITY_NUMBER_DEBUG) where severity_text == "debug"
           - set(severity_number, SEVERITY_NUMBER_INFO) where severity_text == "info"
           - set(severity_number, SEVERITY_NUMBER_WARN) where severity_text == "warn" or severity_text == "warning"
