@@ -100,10 +100,18 @@ processors:
           #   Tool/Agent 业务  
           - set(attributes["tool"], ParseJSON(body)["tool"]) where IsString(body)
           - set(attributes["ref"], ParseJSON(body)["ref"]) where IsString(body)
+          - set(attributes["tool_name"], ParseJSON(body)["tool_name"]) where IsString(body)
+          - set(attributes["tool_ref"], ParseJSON(body)["tool_ref"]) where IsString(body)
           - set(attributes["session_id"], ParseJSON(body)["session_id"]) where IsString(body)
+          - set(attributes["agent_name"], ParseJSON(body)["agent_name"]) where IsString(body)
+          - set(attributes["dedupe_key"], ParseJSON(body)["dedupe_key"]) where IsString(body)
           - set(attributes["tool"], body["tool"]) where IsMap(body)
           - set(attributes["ref"], body["ref"]) where IsMap(body)
+          - set(attributes["tool_name"], body["tool_name"]) where IsMap(body)
+          - set(attributes["tool_ref"], body["tool_ref"]) where IsMap(body)
           - set(attributes["session_id"], body["session_id"]) where IsMap(body)
+          - set(attributes["agent_name"], body["agent_name"]) where IsMap(body)
+          - set(attributes["dedupe_key"], body["dedupe_key"]) where IsMap(body)
 
           # ===== 业务观测字段 (biz_outcome / gateway / platform) =====
           - set(attributes["api_name"], ParseJSON(body)["api_name"]) where IsString(body)
