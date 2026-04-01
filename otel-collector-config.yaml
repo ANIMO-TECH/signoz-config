@@ -72,8 +72,8 @@ processors:
           - set(attributes["expected"], body["expected"]) where IsMap(body)
 
           #   服务/环境（提升到 resource 级别，SigNoz Service Name 筛选器需要）
-          - set(resource.attributes["service.name"], ParseJSON(body)["service_name"]) where IsString(body) and resource.attributes["service.name"] == nil
-          - set(resource.attributes["service.name"], body["service_name"]) where IsMap(body) and resource.attributes["service.name"] == nil
+          - set(resource.attributes["service.name"], ParseJSON(body)["service_name"]) where IsString(body) and (resource.attributes["service.name"] == nil or resource.attributes["service.name"] == "")
+          - set(resource.attributes["service.name"], body["service_name"]) where IsMap(body) and (resource.attributes["service.name"] == nil or resource.attributes["service.name"] == "")
           - set(attributes["service.name"], ParseJSON(body)["service.name"]) where IsString(body)
           - set(attributes["service_name"], ParseJSON(body)["service_name"]) where IsString(body)
           - set(attributes["env"], ParseJSON(body)["env"]) where IsString(body)
