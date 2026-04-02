@@ -79,10 +79,13 @@ processors:
           - set(attributes["service.name"], ParseJSON(body)["service_name"]) where IsString(body)
           - set(attributes["service.name"], body["service_name"]) where IsMap(body)
           - set(attributes["service_name"], ParseJSON(body)["service_name"]) where IsString(body)
+          - set(attributes["service_name"], body["service_name"]) where IsMap(body)
+          # SDK 服务（ai-backend）：resource 里有 service.name 但 body 里没有，从 resource 补到 attribute
+          - set(attributes["service_name"], resource.attributes["service.name"]) where attributes["service_name"] == nil and resource.attributes["service.name"] != nil
+          - set(attributes["service.name"], resource.attributes["service.name"]) where attributes["service.name"] == nil and resource.attributes["service.name"] != nil
           - set(attributes["env"], ParseJSON(body)["env"]) where IsString(body)
           - set(attributes["request_id"], ParseJSON(body)["request_id"]) where IsString(body)
           - set(attributes["service.name"], body["service.name"]) where IsMap(body)
-          - set(attributes["service_name"], body["service_name"]) where IsMap(body)
           - set(attributes["env"], body["env"]) where IsMap(body)
           - set(attributes["request_id"], body["request_id"]) where IsMap(body)
 
