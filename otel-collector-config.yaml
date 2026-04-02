@@ -34,6 +34,10 @@ processors:
     send_batch_size: 10000
     send_batch_max_size: 11000
     timeout: 10s
+  # 将 log attribute service.name 提升到 resource 级别（SigNoz Service Name 筛选器需要）
+  groupbyattrs/service:
+    keys:
+      - service.name
   # 保留原有资源检测处理器
   resourcedetection:
     detectors: [env, system]
@@ -71,10 +75,9 @@ processors:
           - set(attributes["alert"], body["alert"]) where IsMap(body)
           - set(attributes["expected"], body["expected"]) where IsMap(body)
 
-          #   服务/环境（提升到 resource 级别，SigNoz Service Name 筛选器需要）
-          - set(resource.attributes["service.name"], ParseJSON(body)["service_name"]) where IsString(body) and (resource.attributes["service.name"] == nil or resource.attributes["service.name"] == "")
-          - set(resource.attributes["service.name"], body["service_name"]) where IsMap(body) and (resource.attributes["service.name"] == nil or resource.attributes["service.name"] == "")
-          - set(attributes["service.name"], ParseJSON(body)["service.name"]) where IsString(body)
+          #   服务/环境
+          - set(attributes["service.name"], ParseJSON(body)["service_name"]) where IsString(body)
+          - set(attributes["service.name"], body["service_name"]) where IsMap(body)
           - set(attributes["service_name"], ParseJSON(body)["service_name"]) where IsString(body)
           - set(attributes["env"], ParseJSON(body)["env"]) where IsString(body)
           - set(attributes["request_id"], ParseJSON(body)["request_id"]) where IsString(body)
@@ -221,5 +224,5 @@ service:
     # 日志管道
     logs:
       receivers: [otlp]
-      processors: [transform/logs, batch]
+      processors: [transform/logs, groupbyattrs/service, batch]
       exporters: [clickhouselogsexporter]
