@@ -47,11 +47,14 @@ processors:
     log_statements:
       - context: log
         statements:
-          # trace 关联 
+          # trace 关联：先提取到 attributes
           - set(attributes["trace_id"], ParseJSON(body)["trace_id"]) where IsString(body)
           - set(attributes["span_id"], ParseJSON(body)["span_id"]) where IsString(body)
           - set(attributes["trace_id"], body["trace_id"]) where IsMap(body)
           - set(attributes["span_id"], body["span_id"]) where IsMap(body)
+          # 设置到 LogRecord 级别的 trace_id/span_id（SigNoz trace-log 关联依赖此字段）
+          - set(trace_id.string, attributes["trace_id"]) where IsString(attributes["trace_id"]) and attributes["trace_id"] != ""
+          - set(span_id.string, attributes["span_id"]) where IsString(attributes["span_id"]) and attributes["span_id"] != ""
 
           # ===== severity 提取到 OTLP 标准字段 =====
           - set(severity_text, ParseJSON(body)["severity_text"]) where IsString(body)
@@ -174,7 +177,7 @@ processors:
       - name: host.name
       - name: host.type
       - name: container.name
-  # 注意：SigNoz 会自动从 attributes.trace_id/span_id 关联 Trace，无需额外 processor
+  # 注意：trace-log 关联依赖 LogRecord 级别的 trace_id/span_id，已在 transform/logs 中通过 set(trace_id.string, ...) 设置
 
 extensions:
   # 保留原有扩展
