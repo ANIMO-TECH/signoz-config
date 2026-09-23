@@ -160,3 +160,97 @@ def test_auxiliary_fields_cannot_make_an_unuploadable_batch():
     )
     assert e["peer_ip"] is None and "repository" not in e
     assert len(json.dumps(e)) < 2000
+
+
+def test_semantic_producer_events_keep_business_outcome_and_no_secrets():
+    raw = dict(
+        msg="platform.operation",
+        schema_version=1,
+        platform="jobscheduler",
+        action="job.toggle",
+        operation_id="operation-1",
+        resource_id="23",
+        target_environment="test",
+        peer_ip="192.0.2.4",
+        ip_kind="asgi_peer",
+        method="POST",
+        phase="finished",
+        outcome="saved_schedule_failed",
+        saved=True,
+        scheduled=False,
+        status_code=303,
+        changed_fields=["enabled"],
+        headers={"Authorization": "secret"},
+        password="secret",
+    )
+    event = normalize("jobscheduler", json.dumps(raw), NOW)
+    assert event["outcome"] == "saved_schedule_failed" and event["status_code"] == 303
+    assert event["actor"] is None and event["resource"]["id"] == "23"
+    assert event["target_environment"] == "test" and event["changed_fields"] == [
+        "enabled"
+    ]
+    assert "secret" not in json.dumps(event)
+    raw.update(
+        platform="signoz",
+        action="http.mutation",
+        route="/api/v1/dashboards/{id}",
+        method="DELETE",
+        actor_type="api_credential_owner",
+        actor_id="user-1",
+    )
+    event = normalize("signoz", json.dumps(raw), NOW)
+    assert event["actor"] == {"type": "api_credential_owner", "id": "user-1"}
+    assert event["resource"] == {"type": "dashboard", "id": "23"}
+
+
+def test_coolify_semantic_model_and_deployment_events():
+    line = "production.INFO: operation.model.updated " + json.dumps(
+        dict(
+            resource_type="Application",
+            resource_id="app-1",
+            user_id=17,
+            operation_id="operation-1",
+            changed_fields=["git_branch"],
+            outcome="transaction_pending",
+            ip="192.0.2.5",
+            ip_kind="socket_peer",
+        )
+    )
+    event = normalize("coolify", line, NOW)
+    assert (
+        event["outcome"] == "transaction_pending" and event["resource"]["id"] == "app-1"
+    )
+    assert event["operation_id"] == "operation-1" and event["actor"]["id"] == "17"
+    line = "production.INFO: operation.deployment.commit_resolved " + json.dumps(
+        dict(
+            deployment_uuid="run-1",
+            application_uuid="app-1",
+            repository="ANIMO-TECH/jobscheduler",
+            commit="a" * 40,
+            outcome="commit_resolved",
+        )
+    )
+    event = normalize("coolify", line, NOW)
+    assert event["commit"] == "a" * 40 and event["deployment_id"] == "run-1"
+    assert event["actor"] is None
+
+
+def test_malformed_new_producer_fields_do_not_stop_collector():
+    for field in (
+        "action",
+        "method",
+        "actor_type",
+        "phase",
+        "outcome",
+        "target_environment",
+        "ip_kind",
+    ):
+        for value in ([], {}, None, True):
+            raw = dict(
+                msg="platform.operation",
+                schema_version=1,
+                platform="signoz",
+                action="http.mutation",
+            )
+            raw[field] = value
+            normalize("signoz", json.dumps(raw), NOW)

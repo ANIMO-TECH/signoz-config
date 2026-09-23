@@ -13,7 +13,9 @@ READ_ROUTES = re.compile(
     r"^/(?:api/v\d+/(?:query_range|health|version)|openplatform/v1/health|_health|health)(?:/|$)"
 )
 ID = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
-NATIVE = re.compile(r"\b((?:api|ui|webhook|auth)\.[a-z0-9_.-]{1,100})\s+(\{.*)$")
+NATIVE = re.compile(
+    r"\b((?:api|ui|webhook|auth|operation)\.[a-z0-9_.-]{1,100})\s+(\{.*)$"
+)
 ACCESS = re.compile(
     r'(?P<peer>\S+) - "(?P<method>GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS) (?P<path>\S+) HTTP/[\d.]+" (?P<status>\d{3})\b'
 )
@@ -76,6 +78,101 @@ def _base(platform, now):
         status_code=None,
         outcome="observed",
     )
+
+
+def _choice(value, allowed):
+    return isinstance(value, str) and value in allowed
+
+
+def _operation(e, obj):
+    """The producer contract is still allowlisted, never archived verbatim."""
+    if obj.get("platform") != e["platform"] or obj.get("schema_version") != 1:
+        return None
+    action = obj.get("action")
+    if not _choice(
+        action,
+        {
+            "job.create",
+            "job.update",
+            "job.toggle",
+            "job.delete",
+            "job.run",
+            "job.refresh-health",
+            "http.mutation",
+        },
+    ):
+        return None
+    e["action"] = action
+    e["resource"] = {
+        "type": "job" if e["platform"] == "jobscheduler" else "unknown",
+        "id": safe_id(obj.get("resource_id")),
+    }
+    e["peer_ip"] = peer_ip(obj.get("peer_ip"))
+    e["ip_kind"] = (
+        obj.get("ip_kind")
+        if _choice(obj.get("ip_kind"), {"asgi_peer", "socket_peer"})
+        else "observed_peer"
+    )
+    e["method"] = obj.get("method") if _choice(obj.get("method"), METHODS) else None
+    route = obj.get("route")
+    if (
+        isinstance(route, str)
+        and len(route) <= 300
+        and re.fullmatch(r"/api/v\d+/[A-Za-z0-9_/{}/.-]+", route)
+    ):
+        e["route"] = route
+        if classified := _route(e["platform"], route, e["method"], False):
+            e["resource"]["type"] = classified[1]["type"]
+    actor_type = obj.get("actor_type")
+    if _choice(actor_type, {"platform_user", "api_credential_owner"}) and (
+        actor_id := safe_id(obj.get("actor_id"))
+    ):
+        e["actor"] = {"type": actor_type, "id": actor_id}
+    if _choice(obj.get("target_environment"), {"prod", "test"}):
+        e["target_environment"] = obj["target_environment"]
+    for key in ("operation_id", "execution_id"):
+        if value := safe_id(obj.get(key)):
+            e[key] = value
+    if _choice(obj.get("phase"), {"started", "finished"}):
+        e["phase"] = obj["phase"]
+    outcomes = {
+        "started",
+        "applied",
+        "saved_schedule_failed",
+        "unknown_after_save",
+        "failed_or_unknown",
+        "rejected",
+        "request_completed",
+        "deleted",
+        "health_checked",
+        "already_running",
+        "http_succeeded",
+        "execution_failed",
+        "response_write_failed",
+    }
+    if _choice(obj.get("outcome"), outcomes):
+        e["outcome"] = obj["outcome"]
+    for key in ("saved", "scheduled", "enabled"):
+        if type(obj.get(key)) is bool:
+            e[key] = obj[key]
+    for key in ("status_code", "audit_dropped_total"):
+        value = obj.get(key)
+        if type(value) is int and 0 <= value <= (
+            599 if key == "status_code" else 2**63 - 1
+        ):
+            e[key] = value
+    e["changed_fields"] = _changed_fields(obj.get("changed_fields"))
+    return e
+
+
+def _changed_fields(value):
+    if not isinstance(value, list):
+        return []
+    return [
+        x
+        for x in value[:64]
+        if isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9_]{1,80}", x)
+    ]
 
 
 def _source_time(line, obj, envelope):
@@ -192,6 +289,14 @@ def normalize(platform: str, line: str, now: datetime, include_reads=False):
         obj = _object(line)
     e = _base(platform, now)
     e["source_time"] = _source_time(line, obj, envelope)
+    if not obj and "platform.operation" in line:
+        start = line.find("{")
+        obj = _object(line[start:]) if start >= 0 else {}
+        # Some slog handlers prefix the message before the JSON fields.
+        if obj and "msg" not in obj:
+            obj["msg"] = "platform.operation"
+    if obj.get("msg") == "platform.operation":
+        return _operation(e, obj)
     native = NATIVE.search(line) if platform == "coolify" else None
     if native:
         try:
@@ -202,6 +307,8 @@ def normalize(platform: str, line: str, now: datetime, include_reads=False):
             return None
         e["action"] = native[1]
         e["peer_ip"] = peer_ip(context.get("ip"))
+        if context.get("ip_kind") == "socket_peer":
+            e["ip_kind"] = "socket_peer"
         user = safe_id(context.get("user_id"))
         token = safe_id(context.get("token_id"))
         if token:
@@ -214,6 +321,21 @@ def normalize(platform: str, line: str, now: datetime, include_reads=False):
                 break
         if ident := safe_id(context.get("deployment_uuid")):
             e["deployment_id"] = ident
+        if ident := safe_id(context.get("resource_id")):
+            e["resource"] = {
+                "type": safe_id(context.get("resource_type")) or "unknown",
+                "id": ident,
+            }
+        if ident := safe_id(context.get("operation_id")):
+            e["operation_id"] = ident
+        for key in ("component", "operation"):
+            value = context.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.]{1,160}", value):
+                e[key] = value
+        e["changed_fields"] = _changed_fields(context.get("changed_fields"))
+        number = context.get("pull_request_id")
+        if type(number) is int and 0 < number < 2**31:
+            e["pull_request_id"] = number
         commit = context.get("commit")
         repository = context.get("repository")
         if isinstance(commit, str) and re.fullmatch(r"[a-f0-9]{40}", commit):
@@ -227,6 +349,20 @@ def normalize(platform: str, line: str, now: datetime, include_reads=False):
             if e["action"].endswith((".triggered", ".queued"))
             else "native_event"
         )
+        if _choice(
+            context.get("outcome"),
+            {
+                "attempted",
+                "handler_returned",
+                "persisted",
+                "transaction_pending",
+                "queued",
+                "commit_resolved",
+                "status_changed",
+                "accepted",
+            },
+        ):
+            e["outcome"] = context["outcome"]
         return e
     # SigNoz may have a timestamp/logger prefix before its JSON fields.
     if not obj and "::RECEIVED-REQUEST::" in line:

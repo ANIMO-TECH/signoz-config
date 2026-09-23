@@ -55,7 +55,8 @@ def s3():
     yield c, bucket, endpoint
 
 
-def test_real_lock_and_end_to_end_cli(s3, tmp_path):
+@pytest.mark.parametrize("semantic", [False, True])
+def test_real_lock_and_end_to_end_cli(s3, tmp_path, semantic):
     c, bucket, endpoint = s3
     fixtures = {
         "jobscheduler": 'INFO: 10.0.0.1:1 - "POST /jobs/12/run?token=SECRET HTTP/1.1" 303 See Other\n',
@@ -70,6 +71,55 @@ def test_real_lock_and_end_to_end_cli(s3, tmp_path):
         )
         + "\n",
     }
+    if semantic:
+        fixtures = {
+            "jobscheduler": json.dumps(
+                dict(
+                    msg="platform.operation",
+                    schema_version=1,
+                    platform="jobscheduler",
+                    action="job.delete",
+                    resource_id="12",
+                    operation_id="op-1",
+                    outcome="deleted",
+                    phase="finished",
+                    saved=True,
+                    status_code=303,
+                    headers="SECRET",
+                )
+            )
+            + "\n",
+            "coolify": "production.INFO: operation.deployment.commit_resolved "
+            + json.dumps(
+                dict(
+                    user_id=7,
+                    deployment_uuid="deployment123",
+                    repository="ANIMO-TECH/jobscheduler",
+                    commit="a" * 40,
+                    outcome="commit_resolved",
+                    token_name="SECRET",
+                )
+            )
+            + "\n",
+            "signoz": json.dumps(
+                dict(
+                    msg="platform.operation",
+                    schema_version=1,
+                    platform="signoz",
+                    action="http.mutation",
+                    method="DELETE",
+                    route="/api/v1/dashboards/{id}",
+                    resource_id="dashboard-1",
+                    actor_type="platform_user",
+                    actor_id="user-1",
+                    phase="finished",
+                    outcome="request_completed",
+                    status_code=204,
+                    body="SECRET",
+                )
+            )
+            + "\n",
+        }
     config = f'state_dir = "{tmp_path}/state"\n[archive]\nbucket = "{bucket}"\n'
     for platform, line in fixtures.items():
         path = tmp_path / (platform + ".log")
@@ -137,6 +187,18 @@ def test_real_lock_and_end_to_end_cli(s3, tmp_path):
     assert "SECRET" not in exported.stdout
     assert next(x for x in records if x["platform"] == "jobscheduler")["actor"] is None
     assert next(x for x in records if x["platform"] == "coolify")["actor"]["id"] == "7"
+    if semantic:
+        assert (
+            next(x for x in records if x["platform"] == "jobscheduler")["outcome"]
+            == "deleted"
+        )
+        assert (
+            next(x for x in records if x["platform"] == "signoz")["resource"]["id"]
+            == "dashboard-1"
+        )
+        assert (
+            next(x for x in records if x["platform"] == "coolify")["commit"] == "a" * 40
+        )
     for platform, original in fixtures.items():
         assert (tmp_path / (platform + ".log")).read_text() == original
 

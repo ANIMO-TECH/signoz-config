@@ -1,6 +1,6 @@
 # 内部平台操作日志
 
-独立后台采集 JobScheduler、Coolify、SigNoz 的现有日志，记录操作/请求、时间、对象、结果和来源地址。原生可信账号存在时记录账号或凭证 ID，没有时 `actor=null`。不新增登录、弹窗、平台写接口或删除日志的 UI，也不修改原有应用 Compose。
+独立后台采集 JobScheduler、Coolify、SigNoz 的平台操作事件及既有日志，记录操作/请求、时间、对象、结果和来源地址。原生可信账号存在时记录账号或凭证 ID，没有时 `actor=null`。不新增登录、弹窗、平台写接口或删除日志的 UI，也不修改原有应用 Compose。
 
 日志写入独立 S3 兼容对象存储，要求版本化及 **COMPLIANCE Object Lock**。采集账号没有删除权限，独立清理账号每小时清理到期版本。删除源平台上的 Job、部署或看板不会级联删除归档。
 
@@ -112,3 +112,12 @@ CI 使用临时 MinIO、合成日志/凭证，验证归档、未知用户、脱�
 运行时关注：`unavailable`、`oversized`、`truncations`、`collection_failed`、`archive_failed`、`expired_unarchived_events`、`index_failed_archive_retained`、`cleanup_failed`、`retention_sweep.blocked`。日志失败不得解释成没有操作；权限/扩展锁/法律保留异常需要运维处理。
 
 部署前仍需验证：三个来源的真实挂载和格式/覆盖、WORM桶及分角色 IAM、目标资源预算、源日志轮转、目的索引 TTL。Coolify 原生未打点的 UI 语义、SigNoz 缺 method 的请求、来源采集前被删除的日志不在本版完整语义审计保证之内；这些限制明确写在事件类型和接入清单中。
+
+
+## 平台端配套接入（本轮补齐）
+
+本 PR 只是归档层。JobScheduler [PR #5](https://github.com/ANIMO-TECH/jobscheduler/pull/5) 业务仓库新增 `platform.operation`，覆盖 HTML/OpenPlatform 创建、编辑、启停、删除、手动运行与健康刷新；保留 saved_schedule_failed / unknown_after_save 等真实结果。基础设施 [PR #7](https://github.com/ANIMO-TECH/signoz-config/pull/7) 对固定版本 Coolify/SigNoz 提供产生端源码补丁、运行时测试和镜像覆盖文件。
+
+本解析器同时支持这两类新增来源。JobScheduler/SigNoz 的 phase + operation_id 关联开始/结束；Coolify 的组件/方法、模型保存及 changed_fields 只保留字段名，pending 事务不能当成已提交。部署 UUID 连接 queued/commit_resolved/status_changed，解析后的 repository + SHA 可用 `export --github` 查 PR。不会为了补身份读取用户令牌或猜测 IP 归属。
+
+旧格式覆盖限制仍适用于尚未替换镜像的实例；生产还没有发布这些改动。应先升级此解析器，再发布产生端，并以真实测试操作验证源文件 → 归档 → 导出，不能仅凭容器健康判断接入完成。

@@ -44,5 +44,6 @@ id = "signoz-prod"
 platform = "signoz"
 environment = "prod"
 path = "/sources/signoz/*.log*"
-# v0.97.1 logs may omit HTTP method. Such records are labelled *.request,
+# Patched producers emit platform.operation with method/object/optional actor.
+# Unpatched v0.97.1 logs may omit HTTP method. Such records are labelled *.request,
 # not falsely identified as edits; native actor is null unless evidenced.
