@@ -297,15 +297,25 @@ def test_storage_outage_keeps_durable_operation_and_recovers_without_duplicates(
         failed = subprocess.run(
             command, env=env, capture_output=True, text=True, timeout=30
         )
-    assert failed.returncode == 1 and "archive_failed" in failed.stdout
+    assert (
+        failed.returncode == 1
+        and "archive_unavailable_expiry_deferred" in failed.stdout
+    )
     with sqlite3.connect(tmp_path / "state/journal.db") as db:
         assert db.execute("SELECT count(*) FROM event").fetchone()[0] == 1
-        batch = db.execute("SELECT id FROM batch").fetchone()[0]
+        event_id = db.execute("SELECT id FROM event").fetchone()[0]
+        assert db.execute("SELECT count(*) FROM batch").fetchone()[0] == 0
     env["AUDIT_S3_ENDPOINT"] = endpoint
     recovered = subprocess.run(
         command, env=env, capture_output=True, text=True, timeout=30
     )
-    assert recovered.returncode == 0 and batch in recovered.stdout
+    assert recovered.returncode == 0 and "archived" in recovered.stdout
+    records = list(
+        Archive(c, bucket).export(datetime.now(timezone.utc) - timedelta(minutes=1))
+    )
+    assert len(records) == 1 and records[0]["event_id"] == event_id
+    again = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+    assert again.returncode == 0
     assert len(c.list_object_versions(Bucket=bucket)["Versions"]) == 1
     assert log.read_text() == content
 
@@ -446,3 +456,13 @@ def test_restricted_roles_upload_read_and_cleanup_without_cross_role_powers(s3):
         Bucket=bucket, Key=stored["key"], VersionId=stored["version_id"]
     )
     assert list(Archive(reader, bucket).export(now - timedelta(seconds=1))) == [event]
+
+
+def test_actual_skewed_signature_is_reported_as_clock_failure(s3):
+    from platform_audit.archive import ClockSkew
+
+    c, bucket, _ = s3
+    wrong = datetime.now(timezone.utc) + timedelta(days=31)
+    with patch("botocore.auth.get_current_datetime", return_value=wrong):
+        with pytest.raises(ClockSkew):
+            Archive(c, bucket).verify_clock(wrong)

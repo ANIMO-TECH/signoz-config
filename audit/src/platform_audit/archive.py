@@ -16,6 +16,10 @@ class ArchiveUnsafe(RuntimeError):
     pass
 
 
+class ClockSkew(ArchiveUnsafe):
+    pass
+
+
 class Archive:
     def __init__(self, client, bucket, prefix="platform-audit/"):
         if not re.fullmatch(r"[A-Za-z0-9/_-]{1,120}/", prefix) or ".." in prefix:
@@ -44,6 +48,18 @@ class Archive:
             raise ArchiveUnsafe("archive server time unavailable") from None
         return server_time
 
+    def verify_clock(self, now):
+        try:
+            server_time = self.verify_bucket()
+        except ClientError as exc:
+            # S3 may reject the signed request before returning bucket metadata.
+            if exc.response.get("Error", {}).get("Code") == "RequestTimeTooSkewed":
+                raise ClockSkew("storage rejected the request timestamp") from None
+            raise
+        if server_time.tzinfo is None or abs((server_time - now).total_seconds()) > 300:
+            raise ClockSkew("clock differs from storage by more than five minutes")
+        return server_time
+
     def put(self, batch, events, now):
         created = datetime.fromtimestamp(batch["created"], timezone.utc)
         until = created + RETENTION
@@ -53,9 +69,7 @@ class Archive:
             until = until.replace(microsecond=0) + timedelta(seconds=1)
         if until <= now:
             raise ArchiveUnsafe("batch retention window expired")
-        server_time = self.verify_bucket()
-        if abs((server_time - now).total_seconds()) > 300:
-            raise ArchiveUnsafe("clock differs from storage by more than five minutes")
+        self.verify_clock(now)
         raw = b"".join(
             (
                 json.dumps(e, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -124,7 +138,7 @@ class Archive:
 
     def sweep(self, now, cursor=None, max_pages=10):
         """Delete only expired immutable versions. Return durable pagination progress."""
-        self.verify_bucket()
+        self.verify_clock(now)
         cursor = cursor or {}
         deleted = scanned = blocked = 0
         for _ in range(max_pages):

@@ -5,14 +5,14 @@ import signal
 import sys
 import time
 import tomllib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import boto3
 from botocore.config import Config
 
-from .archive import Archive
+from .archive import Archive, ClockSkew
 from .events import PLATFORMS
 from .store import Journal, RETENTION
 from .worker import Tailer
@@ -121,6 +121,12 @@ def main(argv=None):
         emit("archive_configuration_error", error_type=type(exc).__name__)
         return 2
     now = lambda: datetime.now(timezone.utc)
+    receipt_anchor, receipt_tick = now(), time.monotonic()
+
+    def receipt_now():
+        # A wall-clock adjustment after validation must not corrupt a whole poll.
+        return receipt_anchor + timedelta(seconds=time.monotonic() - receipt_tick)
+
     from .index import OtlpIndex
 
     try:
@@ -146,7 +152,7 @@ def main(argv=None):
         index = None
     if args.command == "check":
         try:
-            archive.verify_bucket()
+            archive.verify_clock(now())
         except Exception as exc:
             emit("archive_unsafe", error_type=type(exc).__name__)
             return 2
@@ -226,27 +232,53 @@ def main(argv=None):
             started = time.monotonic()
             errors = 0
             if journal:
+                # Validate time BEFORE destructive expiry or sealing a batch. A
+                # storage outage still permits bounded collection, but never an
+                # unverified time-based deletion. A known bad clock pauses intake.
+                archive_ready, clock_bad, retention_now = False, False, None
                 try:
-                    expired = journal.expire(now(), tailer.cursor_inventory())
-                    if expired:
-                        emit("expired_unarchived_events", count=expired)
-                    stats = tailer.poll(now())
-                    emit("collected", **stats)
-                    if stats["unavailable"]:
+                    verified_at, verified_tick = now(), time.monotonic()
+                    retention_now = archive.verify_clock(verified_at)
+                    receipt_anchor, receipt_tick = verified_at, verified_tick
+                    archive_ready = True
+                except ClockSkew:
+                    clock_bad = True
+                    emit("clock_skew_collection_paused")
+                    errors += 1
+                except Exception as exc:
+                    emit(
+                        "archive_unavailable_expiry_deferred",
+                        error_type=type(exc).__name__,
+                    )
+                    errors += 1
+                try:
+                    if archive_ready:
+                        expired = journal.expire(
+                            retention_now, tailer.cursor_inventory()
+                        )
+                        if expired:
+                            emit("expired_unarchived_events", count=expired)
+                    if not clock_bad:
+                        stats = tailer.poll(receipt_now())
+                        emit("collected", **stats)
+                        if stats["unavailable"]:
+                            errors += 1
+                    if archive_ready and (count := journal.future_count(receipt_now())):
+                        emit("future_records_pending_clock_review", count=count)
                         errors += 1
                 except Exception as exc:
                     emit("collection_failed", error_type=type(exc).__name__)
                     errors += 1
                 # Flush even if input is full/unavailable; this can release backpressure.
                 try:
-                    for _ in range(20):
+                    for _ in range(20 if archive_ready else 0):
                         if stop:
                             break
-                        batch = journal.prepare(now())
+                        batch = journal.prepare(receipt_now())
                         if not batch:
                             break
                         events = journal.batch_events(batch["id"])
-                        archive.put(batch, events, now())
+                        archive.put(batch, events, receipt_now())
                         journal.ack(batch["id"])
                         emit("archived", batch_id=batch["id"])
                         if index:

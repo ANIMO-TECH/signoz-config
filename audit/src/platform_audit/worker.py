@@ -43,7 +43,8 @@ class Tailer:
         for source in self.sources:
             files = sorted(glob.glob(source["path"]))
             if len(files) > 256:
-                raise ValueError("source glob exceeds 256 files")
+                stats["unavailable"] += 1
+                continue
             if not files:
                 stats["unavailable"] += 1
             for path in files:

@@ -146,3 +146,26 @@ def test_inventory_cursor_pruning_is_paginated(tmp_path):
         j.expire(NOW + timedelta(days=31), ({"source/1/599/"}, set()))
         assert j.db.execute("SELECT count(*) FROM cursor").fetchone()[0] == 1
         assert j.offset("source/1/599/signature") == 1
+
+
+def test_oversubscribed_source_does_not_block_other_platforms(tmp_path):
+    busy = tmp_path / "busy"
+    busy.mkdir()
+    for i in range(257):
+        (busy / f"{i}.log").write_bytes(LINE)
+    healthy = tmp_path / "healthy.log"
+    healthy.write_bytes(LINE)
+    sources = [
+        dict(
+            id="oversubscribed",
+            platform="coolify",
+            environment="prod",
+            path=str(busy / "*.log"),
+        ),
+        dict(
+            id="healthy", platform="jobscheduler", environment="prod", path=str(healthy)
+        ),
+    ]
+    with Journal(tmp_path / "j.db") as j:
+        result = Tailer(j, sources).poll(NOW)
+        assert result["events"] == 1 and result["unavailable"] == 1

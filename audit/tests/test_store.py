@@ -61,3 +61,30 @@ def test_delayed_upload_does_not_restart_the_thirty_day_clock(tmp_path):
         batch = j.prepare(NOW)
         assert batch["created"] == received.timestamp()
         assert len(j.batch_events(batch["id"])) == 1
+
+
+def test_future_timestamp_batch_cannot_block_current_evidence(tmp_path):
+    with Journal(tmp_path / "j.db") as j:
+        future = NOW + timedelta(days=31)
+        j.accept("bad-clock", 1, event(), future)
+        frozen = j.prepare(future)
+        immutable = j.batch_events(frozen["id"])
+        j.accept("valid-clock", 1, event(), NOW)
+        assert j.future_count(NOW) == 1
+        ready = j.prepare(NOW)
+        assert ready["id"] != frozen["id"] and ready["created"] == NOW.timestamp()
+        j.ack(ready["id"])
+        assert j.prepare(NOW) is None
+        assert j.batch_events(frozen["id"]) == immutable
+        assert j.prepare(future)["id"] == frozen["id"]
+
+
+def test_future_timestamp_in_same_minute_stays_unsealed(tmp_path):
+    with Journal(tmp_path / "j.db") as j:
+        j.accept("future", 1, event(), NOW + timedelta(seconds=10))
+        j.accept("current", 1, event(), NOW)
+        batch = j.prepare(NOW)
+        assert batch["created"] == NOW.timestamp()
+        assert len(j.batch_events(batch["id"])) == 1
+        j.ack(batch["id"])
+        assert j.prepare(NOW) is None

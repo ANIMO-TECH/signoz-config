@@ -147,3 +147,11 @@ def test_wrong_local_clock_cannot_extend_object_lock_by_months():
             {"id": "a" * 32, "created": future.timestamp()}, [{}], future
         )
     c.put_object.assert_not_called()
+
+
+def test_cleaner_refuses_bad_clock_before_listing_or_deleting():
+    c = client()
+    with pytest.raises(ArchiveUnsafe):
+        Archive(c, "audit-bucket").sweep(NOW + timedelta(days=31))
+    c.list_object_versions.assert_not_called()
+    c.delete_object.assert_not_called()

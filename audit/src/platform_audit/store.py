@@ -88,12 +88,14 @@ class Journal:
     def prepare(self, now, limit=500):
         with self.db:
             row = self.db.execute(
-                "SELECT id,created FROM batch ORDER BY created LIMIT 1"
+                "SELECT id,created FROM batch WHERE created<=? ORDER BY created LIMIT 1",
+                (now.timestamp(),),
             ).fetchone()
             if row:
                 return dict(id=row[0], created=row[1])
             first = self.db.execute(
-                "SELECT MIN(received) FROM event WHERE batch IS NULL"
+                "SELECT MIN(received) FROM event WHERE batch IS NULL AND received<=?",
+                (now.timestamp(),),
             ).fetchone()[0]
             if first is None:
                 return None
@@ -102,8 +104,8 @@ class Journal:
             end = (int(first) // 60 + 1) * 60
             rows = list(
                 self.db.execute(
-                    "SELECT id,received FROM event WHERE batch IS NULL AND received<? ORDER BY received,id LIMIT ?",
-                    (end, limit),
+                    "SELECT id,received FROM event WHERE batch IS NULL AND received<? AND received<=? ORDER BY received,id LIMIT ?",
+                    (end, now.timestamp(), limit),
                 )
             )
             ids = [x[0] for x in rows]
@@ -114,6 +116,11 @@ class Journal:
                 "UPDATE event SET batch=? WHERE id=?", [(ident, x) for x in ids]
             )
             return dict(id=ident, created=origin)
+
+    def future_count(self, now):
+        return self.db.execute(
+            "SELECT count(*) FROM event WHERE received>?", (now.timestamp(),)
+        ).fetchone()[0]
 
     def batch_events(self, ident):
         return [
