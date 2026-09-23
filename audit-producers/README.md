@@ -40,3 +40,5 @@ Coolify 构建先验证官方镜像内三个修改文件的 SHA256，再应用�
 尚未核实生产镜像替换、日志目录 UID/ACL、归档 bucket 和跨主机挂载；这些是待发布条件，不能据本 PR 声称线上已覆盖。
 
 配套业务端：[JobScheduler PR #5](https://github.com/ANIMO-TECH/jobscheduler/pull/5)。
+
+发布覆盖文件显式启用审计所需的 info 级别；SigNoz 使用现有日志器，因此运行时禁用 info 也会禁用新事件。发布验收需核对日志输出，不能只看配置文件。
