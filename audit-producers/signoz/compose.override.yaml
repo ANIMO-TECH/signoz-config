@@ -1,0 +1,6 @@
+# Merge with the root signoz-docker-compose.yaml during the approved release.
+services:
+  signoz:
+    image: ${SIGNOZ_AUDIT_IMAGE:?Set the tested immutable audit image digest}
+    environment:
+      SIGNOZ_INSTRUMENTATION_LOGS_LEVEL: info

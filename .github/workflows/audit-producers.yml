@@ -1,0 +1,38 @@
+name: Platform operation producers
+on:
+  pull_request:
+    paths: ['audit-producers/**', '.github/workflows/audit-producers.yml']
+  push:
+    branches: ['feat/zhaopengwang/platform-audit-producers', master]
+    paths: ['audit-producers/**', '.github/workflows/audit-producers.yml']
+permissions:
+  contents: read
+jobs:
+  coolify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: python3 audit-producers/prepare.py coolify "$RUNNER_TEMP/coolify"
+      - name: Build against the actual upstream runtime
+        run: docker build -t coolify-audit:ci audit-producers/coolify
+      - name: Test Livewire and Eloquent with runtime dependencies
+        run: docker run --rm --entrypoint php coolify-audit:ci -d display_errors=1 -d log_errors=0 -d error_reporting=32767 tests/audit/operation.php
+      - name: Validate release override
+        run: COOLIFY_AUDIT_IMAGE=coolify-audit:ci docker compose -f audit-producers/coolify/compose.override.yaml config --quiet
+  signoz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: python3 audit-producers/prepare.py signoz audit-producers/signoz/source
+      - name: Middleware baseline, producer contracts and race checks
+        run: |
+          docker run --rm -v "$PWD/audit-producers/signoz/source:/src" -w /src golang:1.24 \
+            go test -race ./pkg/http/middleware
+      - name: Build binary and preserve upstream web assets
+        run: docker build -t signoz-audit:ci audit-producers/signoz
+      - name: Binary startup and release override
+        run: |
+          docker run --rm --entrypoint /root/signoz signoz-audit:ci --version
+          SIGNOZ_AUDIT_IMAGE=signoz-audit:ci docker compose -f audit-producers/signoz/compose.override.yaml config --quiet

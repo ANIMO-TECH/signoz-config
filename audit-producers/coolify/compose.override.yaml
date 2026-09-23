@@ -1,0 +1,10 @@
+# Merge into the verified Coolify compose only during the approved release.
+services:
+  coolify:
+    image: ${COOLIFY_AUDIT_IMAGE:?Set the tested immutable audit image digest}
+    environment:
+      LOG_AUDIT_DAYS: '30'
+      LOG_AUDIT_LEVEL: info
+      LOG_AUDIT_PATH: /var/www/html/storage/audit/audit.log
+    volumes:
+      - /data/platform-audit/coolify:/var/www/html/storage/audit

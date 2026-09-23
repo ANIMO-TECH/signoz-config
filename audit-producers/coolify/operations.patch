@@ -1,0 +1,283 @@
+diff --git a/app/Jobs/ApplicationDeploymentJob.php b/app/Jobs/ApplicationDeploymentJob.php
+index 99ff1ac..24620e9 100644
+--- a/app/Jobs/ApplicationDeploymentJob.php
++++ b/app/Jobs/ApplicationDeploymentJob.php
+@@ -2535,6 +2535,7 @@ private function check_git_if_build_needed()
+                     $this->commit = $matches[1];
+                     $this->application_deployment_queue->commit = $this->commit;
+                     $this->application_deployment_queue->save();
++                    \App\Support\PlatformOperationAudit::deployment($this->application, $this->application_deployment_queue, 'commit_resolved');
+                 }
+             }
+         }
+@@ -5133,6 +5134,7 @@ private function updateDeploymentStatus(ApplicationDeploymentStatus $status): vo
+         $this->application_deployment_queue->update([
+             'status' => $status->value,
+         ]);
++        \App\Support\PlatformOperationAudit::deployment($this->application, $this->application_deployment_queue, 'status_changed');
+     }
+ 
+     /**
+diff --git a/app/Providers/AppServiceProvider.php b/app/Providers/AppServiceProvider.php
+index 5856791..bfa8744 100644
+--- a/app/Providers/AppServiceProvider.php
++++ b/app/Providers/AppServiceProvider.php
+@@ -21,6 +21,11 @@ public function register(): void
+ 
+     public function boot(): void
+     {
++        try {
++            \App\Support\PlatformOperationAudit::register();
++        } catch (\Throwable) {
++            // Audit setup must not prevent the platform from booting.
++        }
+         $this->configureCommands();
+ 
+         $this->configureModels();
+diff --git a/app/Support/PlatformOperationAudit.php b/app/Support/PlatformOperationAudit.php
+new file mode 100644
+index 0000000..f607f21
+--- /dev/null
++++ b/app/Support/PlatformOperationAudit.php
+@@ -0,0 +1,134 @@
++<?php
++
++namespace App\Support;
++
++use Illuminate\Database\Eloquent\Model;
++use Illuminate\Support\Facades\Event;
++use Illuminate\Support\Str;
++use Livewire\Livewire;
++use Throwable;
++
++/** Bounded, value-free evidence; native auditLog isolates logging failures. */
++final class PlatformOperationAudit
++{
++    private const MODELS = [
++        'Application', 'ApplicationSetting', 'Service', 'ServiceApplication', 'ServiceDatabase',
++        'Server', 'ServerSetting', 'Project', 'ProjectSetting', 'Environment',
++        'EnvironmentVariable', 'SharedEnvironmentVariable', 'ScheduledTask',
++        'ScheduledDatabaseBackup', 'ScheduledVolumeBackup', 'PrivateKey', 'S3Storage',
++        'StandalonePostgresql', 'StandaloneMysql', 'StandaloneMariadb', 'StandaloneMongodb',
++        'StandaloneRedis', 'StandaloneKeydb', 'StandaloneDragonfly', 'StandaloneClickhouse',
++        'User', 'Team', 'PersonalAccessToken', 'GithubApp', 'GitlabApp', 'InstanceSettings',
++    ];
++
++    public static function register(): void
++    {
++        // Livewire verifies the signed snapshot before this hook. Parameters and
++        // component data are never serialized. "returned" is not business success.
++        Livewire::listen('call', function ($component, $method) {
++            try {
++                if (! preg_match('/^[A-Za-z][A-Za-z0-9_]{0,79}$/D', $method)
++                    || in_array($method, ['render', 'checkStatus', 'getListeners', 'poll', 'refresh'], true)) {
++                    return;
++                }
++                $context = self::callContext($component, $method);
++                request()->attributes->set('platform_operation_id', $context['operation_id']);
++                self::write('ui.operation.called', $context + ['outcome' => 'attempted']);
++                return function () use ($context) {
++                    self::write('ui.operation.returned', $context + ['outcome' => 'handler_returned']);
++                    request()->attributes->remove('platform_operation_id');
++                    // No return value: do not change Livewire's method result.
++                };
++            } catch (Throwable) {
++                return;
++            }
++        });
++        foreach (['created', 'updated', 'deleted'] as $verb) {
++            Event::listen('eloquent.'.$verb.': *', function ($event, $models) use ($verb) {
++                try {
++                    $model = $models[0] ?? null;
++                    if (! $model instanceof Model || ! app()->bound('request')
++                        || request()->isMethodSafe() || app()->runningInConsole()) {
++                        return;
++                    }
++                    $context = self::modelContext($model, $verb);
++                    if ($context === null) {
++                        return;
++                    }
++                    // Do not claim a committed change while a transaction can roll back.
++                    $context['outcome'] = $model->getConnection()->transactionLevel() > 0
++                        ? 'transaction_pending' : 'persisted';
++                    self::write('operation.model.'.$verb, $context);
++                } catch (Throwable) {
++                    // Observability must not abort a model save/delete.
++                }
++            });
++        }
++    }
++
++    public static function callContext(object $component, string $method): array
++    {
++        $class = get_class($component);
++        $context = ['operation_id' => (string) Str::uuid(), 'component' => str_replace('\\', '.', $class), 'operation' => $method];
++        foreach (get_object_vars($component) as $value) {
++            if ($value instanceof Model && ($resource = self::modelContext($value, 'inspect')) !== null) {
++                $context += array_intersect_key($resource, array_flip(['resource_type', 'resource_id']));
++                break;
++            }
++        }
++        return $context;
++    }
++
++    public static function modelContext(Model $model, string $verb): ?array
++    {
++        $type = class_basename($model);
++        if (! in_array($type, self::MODELS, true)) {
++            return null;
++        }
++        $attributes = $model->getAttributes();
++        $id = $attributes['uuid'] ?? $attributes['id'] ?? null;
++        $changed = $verb === 'updated' ? array_keys($model->getChanges()) : [];
++        $changed = array_values(array_filter($changed, fn ($key) => $key !== 'updated_at' && preg_match('/^[a-zA-Z0-9_]{1,80}$/D', $key)));
++        if ($verb === 'updated' && $changed === []) {
++            return null;
++        }
++        return [
++            'resource_type' => $type,
++            'resource_id' => is_scalar($id) && preg_match('/^[a-zA-Z0-9_-]{1,128}$/D', (string) $id) ? (string) $id : null,
++            'changed_fields' => array_slice($changed, 0, 64),
++        ];
++    }
++
++    public static function deployment(object $application, object $deployment, string $outcome): void
++    {
++        try {
++            $app = $application->getAttributes();
++            $run = $deployment->getAttributes();
++            $repository = $app['git_repository'] ?? '';
++            // Canonical GitHub repository only; URLs can contain credentials.
++            preg_match('~^(?:https://github[.]com/|git@github[.]com:)?([A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}?)(?:[.]git)?$~D', $repository, $match);
++            self::write('operation.deployment.'.$outcome, [
++                'application_uuid' => $app['uuid'] ?? null,
++                'deployment_uuid' => $run['deployment_uuid'] ?? null,
++                'repository' => $match[1] ?? null,
++                'commit' => preg_match('/^[a-f0-9]{40}$/D', (string) ($run['commit'] ?? '')) ? $run['commit'] : null,
++                'pull_request_id' => (int) ($run['pull_request_id'] ?? 0),
++                'outcome' => $outcome,
++            ]);
++        } catch (Throwable) {
++        }
++    }
++
++    public static function write(string $event, array $context): void
++    {
++        try {
++            // Use the socket peer, not user-controlled forwarding headers.
++            $peer = app()->bound('request') ? request()->server('REMOTE_ADDR') : null;
++            $context['operation_id'] ??= app()->bound('request') ? request()->attributes->get('platform_operation_id') : null;
++            $context['ip'] = filter_var($peer, FILTER_VALIDATE_IP) ? $peer : null;
++            $context['ip_kind'] = 'socket_peer';
++            auditLog($event, $context);
++        } catch (Throwable) {
++        }
++    }
++}
+diff --git a/bootstrap/helpers/applications.php b/bootstrap/helpers/applications.php
+index 339a0bc..a4ecf6e 100644
+--- a/bootstrap/helpers/applications.php
++++ b/bootstrap/helpers/applications.php
+@@ -100,6 +100,8 @@ function queue_application_deployment(Application $application, string $deployme
+         );
+     }
+ 
++    \App\Support\PlatformOperationAudit::deployment($application, $deployment, 'queued');
++
+     return [
+         'status' => 'queued',
+         'message' => 'Deployment queued.',
+diff --git a/config/logging.php b/config/logging.php
+index 05cf8e1..3fbd554 100644
+--- a/config/logging.php
++++ b/config/logging.php
+@@ -135,7 +135,7 @@
+ 
+         'audit' => [
+             'driver' => 'daily',
+-            'path' => storage_path('logs/audit.log'),
++            'path' => env('LOG_AUDIT_PATH', storage_path('logs/audit.log')),
+             'level' => env('LOG_AUDIT_LEVEL', 'info'),
+             'days' => env('LOG_AUDIT_DAYS', 90),
+             'replace_placeholders' => true,
+diff --git a/tests/audit/operation.php b/tests/audit/operation.php
+new file mode 100644
+index 0000000..81b8224
+--- /dev/null
++++ b/tests/audit/operation.php
+@@ -0,0 +1,75 @@
++<?php
++// Real Laravel/Livewire dependencies, isolated in-memory SQLite, no application boot.
++$events = [];
++$failAudit = false;
++function auditLog($event, $context = [], $level = 'info'): void {
++    global $events, $failAudit;
++    if ($failAudit) { throw new RuntimeException('simulated disk failure'); }
++    $events[] = ['event' => $event] + $context;
++}
++require __DIR__.'/../../vendor/autoload.php';
++use App\Support\PlatformOperationAudit as Audit;
++use Illuminate\Support\Facades\Facade;
++use Illuminate\Database\Capsule\Manager as Capsule;
++use Illuminate\Database\Eloquent\Model;
++use Illuminate\Http\Request;
++
++function check($ok, $message): void { if (! $ok) { throw new RuntimeException($message); } }
++$app = new class extends Illuminate\Foundation\Application {
++    public function runningInConsole() { return false; }
++};
++Illuminate\Container\Container::setInstance($app);
++Facade::setFacadeApplication($app);
++$app->instance('request', Request::create('/livewire/update', 'POST', [], [], [], ['REMOTE_ADDR'=>'192.0.2.42', 'HTTP_X_FORWARDED_FOR'=>'198.51.100.1']));
++$bus = new Livewire\EventBus;
++$app->instance(Livewire\EventBus::class, $bus);
++$app->instance('livewire', new class($bus) {
++    public function __construct(private $bus) {}
++    public function listen($event, $callback) { $this->bus->on($event, $callback); }
++});
++$dispatcher = new Illuminate\Events\Dispatcher($app);
++$app->instance('events', $dispatcher);
++$capsule = new Capsule($app);
++$capsule->addConnection(['driver'=>'sqlite', 'database'=>':memory:', 'prefix'=>'']);
++$capsule->setEventDispatcher($dispatcher);
++$capsule->bootEloquent();
++$capsule->getConnection()->getSchemaBuilder()->create('servers', function ($table) {
++    $table->increments('id'); $table->string('uuid'); $table->string('name'); $table->timestamps(); $table->softDeletes();
++});
++Audit::register();
++// Skip model boot side effects while using its real Eloquent save/delete behavior.
++$server = (new ReflectionClass(App\Models\Server::class))->newInstanceWithoutConstructor();
++$server->setRawAttributes(['uuid'=>'server-1', 'name'=>'secret-server-name']);
++$server->save();
++check(count($events) === 1 && $events[0]['event'] === 'operation.model.created', 'insert hook');
++$server->name = 'changed-secret'; $server->save();
++check(end($events)['changed_fields'] === ['name'], 'changed field names only');
++check(end($events)['outcome'] === 'persisted', 'autocommit outcome');
++$capsule->getConnection()->beginTransaction();
++$server->name = 'rolled-back-secret'; $server->save();
++check(end($events)['outcome'] === 'transaction_pending', 'transaction must not claim commit');
++$capsule->getConnection()->rollBack();
++$component = new class($server) { public function __construct(public $server) {} };
++$finish = $bus->trigger('call', $component, 'submit', ['password'=>'never-store']);
++check(end($events)['operation'] === 'submit', 'Livewire action');
++$server->name = 'saved-secret'; $server->save();
++check(end($events)['operation_id'] !== null, 'save associated with operation');
++$value = 'unchanged-return'; $finish($value);
++check($value === 'unchanged-return' && end($events)['outcome'] === 'handler_returned', 'return semantics');
++check(end($events)['ip'] === '192.0.2.42', 'socket peer');
++$server->delete();
++check(end($events)['event'] === 'operation.model.deleted', 'delete hook');
++check(end($events)['changed_fields'] === [], 'delete must not reuse previous update changes');
++$appModel = new class { public function getAttributes() { return ['uuid'=>'app-1','git_repository'=>'https://github.com/ANIMO-TECH/jobscheduler.git']; } };
++$run = new class { public function getAttributes() { return ['deployment_uuid'=>'deploy-1','commit'=>str_repeat('a',40),'pull_request_id'=>0]; } };
++Audit::deployment($appModel, $run, 'commit_resolved');
++check(end($events)['repository'] === 'ANIMO-TECH/jobscheduler' && end($events)['commit'] === str_repeat('a',40), 'commit correlation');
++$bad = new class { public function getAttributes() { return ['git_repository'=>'https://token:secret@github.com/ANIMO-TECH/jobscheduler']; } };
++Audit::deployment($bad, $run, 'queued');
++check(end($events)['repository'] === null, 'credential URL stripped');
++check(!str_contains(json_encode($events), 'secret') && !str_contains(json_encode($events), 'password'), 'no values retained');
++$failAudit = true;
++$finish = $bus->trigger('call', $component, 'delete', []);
++$finish($value);
++check($value === 'unchanged-return', 'logging failure isolation');
++echo "Coolify operation integration: checks passed\n";
