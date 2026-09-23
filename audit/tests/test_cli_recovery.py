@@ -134,3 +134,51 @@ def test_wall_clock_step_after_validation_does_not_corrupt_receipt_time(
     assert (
         datetime.fromisoformat(events[0]["observed_at"].replace("Z", "+00:00")) == NOW
     )
+
+
+@pytest.mark.parametrize("offset_days", [-31, 31])
+def test_offline_start_with_wrong_clock_keeps_evidence_after_restart(
+    tmp_path, monkeypatch, offset_days
+):
+    path = tmp_path / "app.log"
+    path.write_text('INFO: 192.0.2.1:1 - "POST /jobs/2/run HTTP/1.1" 303 See Other\n')
+    state = tmp_path / "state"
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        f'state_dir="{state}"\n[archive]\nbucket="audit-test"\n[[sources]]\nid="jobs"\nplatform="jobscheduler"\nenvironment="prod"\npath="{path}"\n'
+    )
+
+    class Clock(datetime):
+        value = NOW + timedelta(days=offset_days)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.value
+
+    c = Mock()
+    c.get_bucket_versioning.side_effect = OSError("offline")
+    monkeypatch.setattr(cli, "datetime", Clock)
+    monkeypatch.setattr(cli.time, "monotonic", lambda: 0)
+    monkeypatch.setattr(cli, "client", lambda endpoint: c)
+    monkeypatch.setattr(cli.signal, "signal", lambda *args: None)
+    assert cli.main(["collect", "--once", "--config", str(cfg)]) == 1
+    with Journal(state / "journal.db") as j:
+        event_id = j.db.execute("SELECT id FROM event").fetchone()[0]
+    Clock.value = NOW
+    c.get_bucket_versioning.side_effect = None
+    c.get_bucket_versioning.return_value = {
+        "Status": "Enabled",
+        "ResponseMetadata": {"HTTPHeaders": {"date": "Wed, 23 Sep 2026 00:00:00 GMT"}},
+    }
+    c.get_object_lock_configuration.return_value = {
+        "ObjectLockConfiguration": {
+            "ObjectLockEnabled": "Enabled",
+            "Rule": {"DefaultRetention": {"Mode": "COMPLIANCE", "Days": 30}},
+        }
+    }
+    captured = []
+    monkeypatch.setattr(
+        cli.Archive, "put", lambda self, batch, events, now: captured.extend(events)
+    )
+    assert cli.main(["collect", "--once", "--config", str(cfg)]) == 0
+    assert len(captured) == 1 and captured[0]["event_id"] == event_id

@@ -392,6 +392,12 @@ def normalize(platform: str, line: str, now: datetime, include_reads=False):
         method = match["method"]
         status = match["status"]
         peer = match["peer"]
+        # Uvicorn formats its socket tuple as "%s:%d", including unbracketed
+        # IPv6. Parsing the full token as an IP can turn its port into an IPv6
+        # address segment (or drop the address for a five-digit port).
+        host, separator, port = peer.rpartition(":")
+        if separator and re.fullmatch(r"[0-9]{1,5}", port) and int(port) <= 65535:
+            peer = host
     else:
         return None
     method = method if isinstance(method, str) and method in METHODS else None

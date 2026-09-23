@@ -122,6 +122,7 @@ def main(argv=None):
         return 2
     now = lambda: datetime.now(timezone.utc)
     receipt_anchor, receipt_tick = now(), time.monotonic()
+    receipt_clock_verified = False
 
     def receipt_now():
         # A wall-clock adjustment after validation must not corrupt a whole poll.
@@ -240,6 +241,7 @@ def main(argv=None):
                     verified_at, verified_tick = now(), time.monotonic()
                     retention_now = archive.verify_clock(verified_at)
                     receipt_anchor, receipt_tick = verified_at, verified_tick
+                    receipt_clock_verified = True
                     archive_ready = True
                 except ClockSkew:
                     clock_bad = True
@@ -253,13 +255,18 @@ def main(argv=None):
                     errors += 1
                 try:
                     if archive_ready:
+                        recovered = journal.recover_unverified_time(receipt_now())
+                        if recovered:
+                            emit("unverified_receipt_times_recovered", count=recovered)
                         expired = journal.expire(
                             retention_now, tailer.cursor_inventory()
                         )
                         if expired:
                             emit("expired_unarchived_events", count=expired)
                     if not clock_bad:
-                        stats = tailer.poll(receipt_now())
+                        stats = tailer.poll(
+                            receipt_now(), clock_verified=receipt_clock_verified
+                        )
                         emit("collected", **stats)
                         if stats["unavailable"]:
                             errors += 1

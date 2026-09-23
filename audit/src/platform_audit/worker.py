@@ -33,7 +33,7 @@ class Tailer:
                     uncertain_sources.add(source["id"])
         return live_files, uncertain_sources
 
-    def poll(self, now=None):
+    def poll(self, now=None, *, clock_verified=True):
         now = now or datetime.now(timezone.utc)
         stats = dict(
             lines=0, events=0, oversized=0, unavailable=0, truncations=0, bytes=0
@@ -126,6 +126,17 @@ class Tailer:
                     if event:
                         event["instance"] = source["id"]
                         event["instance_environment"] = source["environment"]
+                        if not clock_verified:
+                            # Reserve both fixed-width timestamps before accepting
+                            # the row: recovery must work even at the spool limit.
+                            stamp = (
+                                now.astimezone(timezone.utc)
+                                .isoformat(timespec="microseconds")
+                                .replace("+00:00", "Z")
+                            )
+                            event["observed_at"] = stamp
+                            event["unverified_observed_at"] = stamp
+                            event["receipt_time_status"] = "unverified"
                     self.journal.accept(ident, stream.tell(), event, now)
                     stats["lines"] += 1
                     stats["events"] += bool(event)

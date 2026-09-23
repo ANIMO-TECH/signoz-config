@@ -274,3 +274,16 @@ def test_signoz_key_revocation_keeps_object_id_without_copying_secret():
     event = normalize("signoz", json.dumps(raw), NOW)
     assert event["resource"] == {"type": "api_key", "id": "key-record-id"}
     assert "secret" not in json.dumps(event)
+
+
+def test_uvicorn_ipv6_client_address_does_not_include_the_source_port():
+    for port in (8000, 54321):
+        line = f'INFO: 2001:db8::1:{port} - "POST /jobs/1/run HTTP/1.1" 303 See Other'
+        event = normalize("jobscheduler", line, NOW)
+        assert event["peer_ip"] == "2001:db8::1"
+
+
+def test_invalid_uvicorn_socket_port_does_not_stop_collection():
+    for port in ("65536", "²"):
+        line = f'INFO: 2001:db8::1:{port} - "POST /jobs/1/run HTTP/1.1" 303 See Other'
+        assert normalize("jobscheduler", line, NOW)["peer_ip"] is None

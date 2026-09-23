@@ -169,3 +169,30 @@ def test_oversubscribed_source_does_not_block_other_platforms(tmp_path):
     with Journal(tmp_path / "j.db") as j:
         result = Tailer(j, sources).poll(NOW)
         assert result["events"] == 1 and result["unavailable"] == 1
+
+
+def test_unverified_receipt_recovery_preserves_original_time_and_full_spool(tmp_path):
+    path = tmp_path / "app.log"
+    path.write_bytes(LINE)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        old = NOW - timedelta(days=31)
+        assert t.poll(old, clock_verified=False)["events"] == 1
+        before = j.db.execute("SELECT id,payload FROM event").fetchone()
+        j.max_bytes = j.db.execute(
+            "SELECT value FROM counters WHERE key='bytes'"
+        ).fetchone()[0]
+        assert j.recover_unverified_time(NOW) == 1
+        assert j.expire(NOW, t.cursor_inventory()) == 0
+        batch = j.prepare(NOW)
+        events = j.batch_events(batch["id"])
+        assert events[0]["event_id"] == before[0]
+        assert events[0]["receipt_time_status"] == "recovered"
+        assert events[0]["unverified_observed_at"].startswith(old.date().isoformat())
+        assert events[0]["observed_at"].startswith(NOW.date().isoformat())
+        assert (
+            j.db.execute("SELECT value FROM counters WHERE key='bytes'").fetchone()[0]
+            <= j.max_bytes
+        )
+        assert j.recover_unverified_time(NOW + timedelta(days=1)) == 0
+        assert j.batch_events(batch["id"]) == events

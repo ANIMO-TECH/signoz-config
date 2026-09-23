@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 import uuid
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 
 RETENTION = timedelta(days=30)
@@ -121,6 +121,50 @@ class Journal:
         return self.db.execute(
             "SELECT count(*) FROM event WHERE received>?", (now.timestamp(),)
         ).fetchone()[0]
+
+    def recover_unverified_time(self, now):
+        """Use first verified receipt time, preserving the original clock reading.
+
+        Only unsealed, explicitly unverified rows are eligible. Their IDs/source
+        timestamps survive; an uploaded or prepared batch is never rewritten.
+        """
+        stamp = (
+            now.astimezone(timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+        marker, recovered = "", 0
+        with self.db:
+            while True:
+                rows = self.db.execute(
+                    "SELECT id,payload FROM event WHERE batch IS NULL AND id>? ORDER BY id LIMIT 256",
+                    (marker,),
+                ).fetchall()
+                if not rows:
+                    break
+                marker = rows[-1][0]
+                for ident, payload in rows:
+                    event = json.loads(payload)
+                    if event.get("receipt_time_status") != "unverified":
+                        continue
+                    if event.get("unverified_observed_at") != event.get("observed_at"):
+                        raise ValueError("invalid unverified receipt metadata")
+                    event.update(observed_at=stamp, receipt_time_status="recovered")
+                    updated = json.dumps(
+                        event, ensure_ascii=False, separators=(",", ":")
+                    )
+                    delta = len(updated.encode()) - len(payload.encode())
+                    if delta > 0:
+                        raise ValueError("unverified timestamp was not fixed-width")
+                    self.db.execute(
+                        "UPDATE event SET received=?,payload=? WHERE id=?",
+                        (now.timestamp(), updated, ident),
+                    )
+                    self.db.execute(
+                        "UPDATE counters SET value=value+? WHERE key='bytes'", (delta,)
+                    )
+                    recovered += 1
+        return recovered
 
     def batch_events(self, ident):
         return [
