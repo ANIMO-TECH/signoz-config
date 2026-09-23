@@ -1,0 +1,18 @@
+{
+  "Rules": [
+    {
+      "ID": "audit-retention-fallback",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "platform-audit/"},
+      "Expiration": {"Days": 30},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 1},
+      "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}
+    },
+    {
+      "ID": "audit-expired-delete-markers",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "platform-audit/"},
+      "Expiration": {"ExpiredObjectDeleteMarker": true}
+    }
+  ]
+}

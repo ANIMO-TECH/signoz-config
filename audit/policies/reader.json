@@ -1,0 +1,7 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect":"Allow","Action":"s3:ListBucketVersions","Resource":"arn:aws:s3:::AUDIT_BUCKET","Condition":{"StringLike":{"s3:prefix":"platform-audit/*"}}},
+    {"Effect":"Allow","Action":"s3:GetObjectVersion","Resource":"arn:aws:s3:::AUDIT_BUCKET/platform-audit/*"}
+  ]
+}

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "internal-platform-audit"
+version = "0.1.0"
+description = "Non-blocking platform operation collection with 30-day locked archives"
+requires-python = ">=3.11"
+dependencies = ["boto3>=1.40,<2"]
+
+[project.scripts]
+platform-audit = "platform_audit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
