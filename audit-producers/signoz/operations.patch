@@ -1,0 +1,278 @@
+diff --git a/pkg/http/middleware/logging.go b/pkg/http/middleware/logging.go
+index 8a967a5..7b61753 100644
+--- a/pkg/http/middleware/logging.go
++++ b/pkg/http/middleware/logging.go
+@@ -16,6 +16,7 @@ const (
+ )
+ 
+ type Logging struct {
++	audit          *operationAudit
+ 	logger         *slog.Logger
+ 	excludedRoutes map[string]struct{}
+ }
+@@ -27,6 +28,7 @@ func NewLogging(logger *slog.Logger, excludedRoutes []string) *Logging {
+ 	}
+ 
+ 	return &Logging{
++		audit:          newOperationAudit(logger),
+ 		logger:         logger.With("pkg", pkgname),
+ 		excludedRoutes: excludedRoutesMap,
+ 	}
+@@ -52,7 +54,28 @@ func (middleware *Logging) Wrap(next http.Handler) http.Handler {
+ 
+ 		badResponseBuffer := new(bytes.Buffer)
+ 		writer := newBadResponseLoggingWriter(rw, badResponseBuffer)
++		auditFields := operationFields(req, path)
++		middleware.audit.emit(auditFields, "started", "started", 0)
++		completed := false
++		defer func() {
++			outcome := "failed_or_unknown"
++			status := writer.StatusCode()
++			if completed {
++				if status >= 400 {
++					outcome = "rejected"
++				} else {
++					outcome = "request_completed"
++				}
++				if writer.WriteError() != nil {
++					outcome = "response_write_failed"
++				}
++			} else {
++				status = 500
++			}
++			middleware.audit.emit(auditFields, "finished", outcome, status)
++		}()
+ 		next.ServeHTTP(writer, req)
++		completed = true
+ 
+ 		// if the path is in the excludedRoutes map, don't log
+ 		if _, ok := middleware.excludedRoutes[path]; ok {
+diff --git a/pkg/http/middleware/operation_audit.go b/pkg/http/middleware/operation_audit.go
+new file mode 100644
+index 0000000..2119472
+--- /dev/null
++++ b/pkg/http/middleware/operation_audit.go
+@@ -0,0 +1,97 @@
++package middleware
++
++import (
++	"context"
++	"log/slog"
++	"net"
++	"net/http"
++	"regexp"
++	"strings"
++	"sync/atomic"
++	"time"
++
++	"github.com/SigNoz/signoz/pkg/types/authtypes"
++	"github.com/SigNoz/signoz/pkg/types/ctxtypes"
++	"github.com/google/uuid"
++	"github.com/gorilla/mux"
++)
++
++var auditID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
++var auditRoutes = regexp.MustCompile(`^/api/v[0-9]+/(dashboards|rules|channels|downtime_schedules|settings|explorer/views|user|users|org|orgs|invite|login|logout|register|resetPassword|changePassword|apiKeys|roles|integrations|cloud-integrations|logs/pipelines|logs/fields|traces/fields)(/|$)`)
++
++type operationAudit struct {
++	queue   chan []any
++	dropped atomic.Uint64
++}
++
++func newOperationAudit(logger *slog.Logger) *operationAudit {
++	a := &operationAudit{queue: make(chan []any, 1024)}
++	go func() {
++		for fields := range a.queue {
++			// No request context, headers, payloads or exception strings retained.
++			func() {
++				defer func() {
++					if recover() != nil {
++						a.dropped.Add(1)
++					}
++				}()
++				logger.InfoContext(context.Background(), "platform.operation", fields...)
++			}()
++		}
++	}()
++	return a
++}
++
++func (a *operationAudit) emit(fields []any, phase, outcome string, status int) {
++	if fields == nil {
++		return
++	}
++	copyFields := append([]any(nil), fields...)
++	copyFields = append(copyFields, "timestamp", time.Now().UTC().Format(time.RFC3339Nano),
++		"phase", phase, "outcome", outcome, "status_code", status, "audit_dropped_total", a.dropped.Load())
++	select {
++	case a.queue <- copyFields:
++	default:
++		a.dropped.Add(1)
++	}
++}
++
++func operationFields(req *http.Request, route string) []any {
++	switch req.Method {
++	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
++	default:
++		return nil
++	}
++	// The allowlist excludes high-volume read-only POST queries and previews.
++	if !auditRoutes.MatchString(route) || strings.Contains(route, "/history/") || strings.HasSuffix(route, "/preview") {
++		return nil
++	}
++	peer, _, err := net.SplitHostPort(req.RemoteAddr)
++	if err != nil {
++		peer = req.RemoteAddr
++	}
++	if net.ParseIP(peer) == nil {
++		peer = ""
++	}
++	id := ""
++	for _, key := range []string{"id", "viewId", "ruleId", "channelId"} {
++		if value := mux.Vars(req)[key]; auditID.MatchString(value) {
++			id = value
++			break
++		}
++	}
++	// POST may mean login, test or trigger; do not guess "created" from method.
++	fields := []any{"schema_version", 1, "platform", "signoz", "operation_id", uuid.NewString(),
++		"action", "http.mutation", "method", req.Method, "route", route,
++		"resource_id", id, "peer_ip", peer, "ip_kind", "socket_peer"}
++	auth, ok := ctxtypes.AuthTypeFromContext(req.Context())
++	if claims, err := authtypes.ClaimsFromContext(req.Context()); err == nil && ok && auditID.MatchString(claims.UserID) {
++		if auth == ctxtypes.AuthTypeJWT {
++			fields = append(fields, "actor_type", "platform_user", "actor_id", claims.UserID)
++		} else if auth == ctxtypes.AuthTypeAPIKey {
++			// Claims identify the key owner, not necessarily the key's current user.
++			fields = append(fields, "actor_type", "api_credential_owner", "actor_id", claims.UserID)
++		}
++	}
++	return fields
++}
+diff --git a/pkg/http/middleware/operation_audit_test.go b/pkg/http/middleware/operation_audit_test.go
+new file mode 100644
+index 0000000..7352ae9
+--- /dev/null
++++ b/pkg/http/middleware/operation_audit_test.go
+@@ -0,0 +1,120 @@
++package middleware
++
++import (
++	"io"
++	"log/slog"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/SigNoz/signoz/pkg/types/authtypes"
++	"github.com/SigNoz/signoz/pkg/types/ctxtypes"
++	"github.com/gorilla/mux"
++)
++
++func fieldsMap(fields []any) map[string]any {
++	out := make(map[string]any)
++	for i := 0; i < len(fields); i += 2 {
++		out[fields[i].(string)] = fields[i+1]
++	}
++	return out
++}
++
++func TestOperationFields(t *testing.T) {
++	req := httptest.NewRequest("PUT", "http://localhost/api/v1/dashboards/dash-1?secret=password", strings.NewReader(`{"secret":"password"}`))
++	req.RemoteAddr = "192.0.2.3:321"
++	req.Header.Set("Authorization", "secret-password")
++	req.Header.Set("X-Forwarded-For", "198.51.100.1")
++	req = mux.SetURLVars(req, map[string]string{"id": "dash-1"})
++	for _, auth := range []ctxtypes.AuthType{ctxtypes.AuthTypeJWT, ctxtypes.AuthTypeAPIKey} {
++		ctx := ctxtypes.SetAuthType(authtypes.NewContextWithClaims(req.Context(), authtypes.Claims{UserID: "user-1", Email: "secret@example.invalid"}), auth)
++		fields := fieldsMap(operationFields(req.WithContext(ctx), "/api/v1/dashboards/{id}"))
++		if fields["peer_ip"] != "192.0.2.3" || fields["resource_id"] != "dash-1" || fields["actor_id"] != "user-1" {
++			t.Fatal(fields)
++		}
++		want := "platform_user"
++		if auth == ctxtypes.AuthTypeAPIKey {
++			want = "api_credential_owner"
++		}
++		if fields["actor_type"] != want {
++			t.Fatal(fields)
++		}
++		for _, value := range fields {
++			if s, ok := value.(string); ok && (strings.Contains(s, "secret") || strings.Contains(s, "password")) {
++				t.Fatal("secret copied")
++			}
++		}
++	}
++	if fieldsMap(operationFields(req, "/api/v1/dashboards/{id}"))["actor_id"] != nil {
++		t.Fatal("unverified identity")
++	}
++	for _, route := range []string{"/api/v4/query_range", "/api/v1/logs/pipelines/preview", "/api/v1/rules/{id}/history/stats"} {
++		req.Method = "POST"
++		if operationFields(req, route) != nil {
++			t.Fatal("read audited", route)
++		}
++	}
++	req.Method = "GET"
++	if operationFields(req, "/api/v1/dashboards/{id}") != nil {
++		t.Fatal("read audited")
++	}
++}
++
++func TestOperationResponseAndPanic(t *testing.T) {
++	for _, code := range []int{204, 403, 500, 0} {
++		audit := &operationAudit{queue: make(chan []any, 4)}
++		log := &Logging{logger: slog.New(slog.NewJSONHandler(io.Discard, nil)), audit: audit, excludedRoutes: map[string]struct{}{}}
++		r := mux.NewRouter()
++		r.Use(log.Wrap)
++		r.HandleFunc("/api/v1/dashboards/{id}", func(w http.ResponseWriter, r *http.Request) {
++			if code == 0 {
++				panic("private panic")
++			}
++			w.WriteHeader(code)
++		}).Methods("DELETE")
++		panicked := false
++		func() {
++			defer func() {
++				if recover() != nil {
++					panicked = true
++				}
++			}()
++			r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("DELETE", "/api/v1/dashboards/dash-1", nil))
++		}()
++		first, last := fieldsMap(<-audit.queue), fieldsMap(<-audit.queue)
++		if first["operation_id"] != last["operation_id"] || last["phase"] != "finished" {
++			t.Fatal(last)
++		}
++		want := "rejected"
++		if code == 204 {
++			want = "request_completed"
++		}
++		if code == 0 {
++			want = "failed_or_unknown"
++		}
++		if last["outcome"] != want || panicked != (code == 0) {
++			t.Fatal(last)
++		}
++	}
++}
++
++func TestOperationQueueDoesNotBlock(t *testing.T) {
++	a := &operationAudit{queue: make(chan []any, 1)}
++	done := make(chan bool, 1)
++	go func() {
++		for i := 0; i < 10000; i++ {
++			a.emit([]any{"platform", "signoz"}, "finished", "request_completed", 200)
++		}
++		done <- true
++	}()
++	select {
++	case <-done:
++	case <-time.After(time.Second):
++		t.Fatal("request blocked")
++	}
++	if len(a.queue) != 1 || a.dropped.Load() != 9999 {
++		t.Fatal("unbounded queue or wrong drop count")
++	}
++}
