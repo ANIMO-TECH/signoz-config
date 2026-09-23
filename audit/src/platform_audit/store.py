@@ -137,7 +137,7 @@ class Journal:
             )
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
-    def expire(self, now):
+    def expire(self, now, cursor_inventory=None):
         cutoff = (now - RETENTION).timestamp()
         with self.db:
             # A sealed batch must remain byte-for-byte identical across upload retries.
@@ -154,6 +154,29 @@ class Journal:
             self.db.execute(
                 "UPDATE counters SET value=value-? WHERE key='bytes'", (size,)
             )
-            self.db.execute("DELETE FROM cursor WHERE seen<?", (cutoff,))
+            # An old cursor can still point at a retained source file. Forgetting it
+            # after a long shutdown replays acknowledged events with a new receipt
+            # time. Prune only against a current source inventory, never age alone.
+            if cursor_inventory is not None:
+                live_files, uncertain_sources = cursor_inventory
+                marker = ""
+                while True:
+                    rows = self.db.execute(
+                        "SELECT source FROM cursor WHERE seen<? AND source>? ORDER BY source LIMIT 256",
+                        (cutoff, marker),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    marker = rows[-1][0]
+                    absent = []
+                    for (source,) in rows:
+                        parts = source.split("/")
+                        file_key = "/".join(parts[:3]) + "/"
+                        if (
+                            parts[0] not in uncertain_sources
+                            and file_key not in live_files
+                        ):
+                            absent.append((source,))
+                    self.db.executemany("DELETE FROM cursor WHERE source=?", absent)
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return count

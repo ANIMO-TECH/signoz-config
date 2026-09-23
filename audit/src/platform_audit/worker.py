@@ -14,6 +14,25 @@ class Tailer:
         self.journal, self.sources, self.max_lines = journal, sources, max_lines
         self.next_file = 0
 
+    def cursor_inventory(self):
+        """Metadata-only liveness check; an unavailable mount cannot retire cursors."""
+        live_files, uncertain_sources = set(), set()
+        for source in self.sources:
+            paths = glob.glob(source["path"])
+            if not paths or len(paths) > 256:
+                uncertain_sources.add(source["id"])
+                continue
+            for path in paths:
+                try:
+                    info = os.stat(path, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode):
+                        uncertain_sources.add(source["id"])
+                        continue
+                    live_files.add(f"{source['id']}/{info.st_dev}/{info.st_ino}/")
+                except OSError:
+                    uncertain_sources.add(source["id"])
+        return live_files, uncertain_sources
+
     def poll(self, now=None):
         now = now or datetime.now(timezone.utc)
         stats = dict(

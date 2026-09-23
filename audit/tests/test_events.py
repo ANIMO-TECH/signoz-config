@@ -256,3 +256,21 @@ def test_malformed_new_producer_fields_do_not_stop_collector():
             )
             raw[field] = value
             normalize("signoz", json.dumps(raw), NOW)
+
+
+def test_signoz_key_revocation_keeps_object_id_without_copying_secret():
+    raw = dict(
+        msg="platform.operation",
+        schema_version=1,
+        platform="signoz",
+        action="http.mutation",
+        method="DELETE",
+        route="/api/v1/pats/{id}",
+        resource_id="key-record-id",
+        token="secret",
+        phase="finished",
+        outcome="request_completed",
+    )
+    event = normalize("signoz", json.dumps(raw), NOW)
+    assert event["resource"] == {"type": "api_key", "id": "key-record-id"}
+    assert "secret" not in json.dumps(event)

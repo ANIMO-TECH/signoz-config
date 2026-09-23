@@ -121,3 +121,8 @@ CI 使用临时 MinIO、合成日志/凭证，验证归档、未知用户、脱�
 本解析器同时支持这两类新增来源。JobScheduler/SigNoz 的 phase + operation_id 关联开始/结束；Coolify 的组件/方法、模型保存及 changed_fields 只保留字段名，pending 事务不能当成已提交。部署 UUID 连接 queued/commit_resolved/status_changed，解析后的 repository + SHA 可用 `export --github` 查 PR。不会为了补身份读取用户令牌或猜测 IP 归属。
 
 旧格式覆盖限制仍适用于尚未替换镜像的实例；生产还没有发布这些改动。应先升级此解析器，再发布产生端，并以真实测试操作验证源文件 → 归档 → 导出，不能仅凭容器健康判断接入完成。
+
+游标保留与日志内容分开：操作事件仍按接收时间保留30天；文件游标只含来源标识/偏移。仍存在的文件、暂时不可用的来源会保留游标，避免停机超过30天后把旧操作当新日志再归档。只有当前文件清单确认已离开的旧游标才清理，按256行分页处理，不改变缓冲容量上限。
+
+
+清理权限模板只允许携带非空、非 null 的 VersionId 删除指定归档前缀；不允许不带版本号的删除（会生成隐藏当前对象的 delete marker）。MinIO 的版本删除同时检查 DeleteObject，不能一边允许 DeleteObjectVersion 一边无条件禁止 DeleteObject。现已使用 versionid 条件限定权限，锁未到期仍由 COMPLIANCE 拒绝删除。策略已用 MinIO STS 分角色实测；生产 AWS/其他 S3 服务的真实 IAM 与桶策略需在发布验收时核实。

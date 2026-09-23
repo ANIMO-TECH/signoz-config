@@ -365,3 +365,84 @@ def test_optional_index_failure_cannot_lose_or_block_locked_archive(s3, tmp_path
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_restricted_roles_upload_read_and_cleanup_without_cross_role_powers(s3):
+    from pathlib import Path
+
+    root, bucket, endpoint = s3
+    policy_dir = Path(__file__).resolve().parents[1] / "policies"
+
+    def role(name):
+        policy = (
+            (policy_dir / (name + ".json")).read_text().replace("AUDIT_BUCKET", bucket)
+        )
+        # MinIO STS applies a session policy; credentials never leave this fixture.
+        credentials = boto3.client(
+            "sts", endpoint_url=endpoint, region_name="us-east-1"
+        ).assume_role(
+            RoleArn="arn:aws:iam::123456789012:role/audit-test",
+            RoleSessionName="audit-" + name,
+            Policy=json.dumps(json.loads(policy), separators=(",", ":")),
+        )["Credentials"]
+        return boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            region_name="us-east-1",
+            aws_access_key_id=credentials["AccessKeyId"],
+            aws_secret_access_key=credentials["SecretAccessKey"],
+            aws_session_token=credentials["SessionToken"],
+            config=Config(s3={"addressing_style": "path"}),
+        )
+
+    writer, cleaner, reader = role("writer"), role("cleaner"), role("reader")
+    now = datetime.now(timezone.utc)
+    payload = b'{"fixture":"expired"}\n'
+    until = (now + timedelta(seconds=3)).replace(microsecond=0)
+    old = root.put_object(
+        Bucket=bucket,
+        Key="platform-audit/expired",
+        Body=gzip.compress(payload),
+        ObjectLockMode="COMPLIANCE",
+        ObjectLockRetainUntilDate=until,
+        Metadata={
+            "schema": "1",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "archive-created-at": (now - timedelta(days=31)).isoformat(),
+        },
+    )
+    time.sleep(max(0, (until - datetime.now(timezone.utc)).total_seconds()) + 0.15)
+    # An expired lock cannot explain this denial: the writer policy must deny delete.
+    with pytest.raises(ClientError) as denied:
+        writer.delete_object(
+            Bucket=bucket, Key="platform-audit/expired", VersionId=old["VersionId"]
+        )
+    assert denied.value.response["Error"]["Code"] == "AccessDenied"
+    now = datetime.now(timezone.utc)
+    event = {"observed_at": now.isoformat(), "platform": "jobscheduler", "actor": None}
+    stored = Archive(writer, bucket).put(
+        {"id": uuid.uuid4().hex, "created": now.timestamp()}, [event], now
+    )
+    for restricted in (reader, cleaner):
+        with pytest.raises(ClientError) as denied:
+            restricted.put_object(
+                Bucket=bucket, Key="platform-audit/forbidden-write", Body=b"no"
+            )
+        assert denied.value.response["Error"]["Code"] == "AccessDenied"
+    # Never allow a marker that hides the current object, a null version, or a
+    # still-locked version. The expired version below MUST be deletable.
+    for extra in ({}, {"VersionId": "null"}, {"VersionId": stored["version_id"]}):
+        with pytest.raises(ClientError) as denied:
+            cleaner.delete_object(Bucket=bucket, Key=stored["key"], **extra)
+        allowed_errors = (
+            {"AccessDenied", "InvalidRequest"}
+            if extra.get("VersionId") == stored["version_id"]
+            else {"AccessDenied"}
+        )
+        assert denied.value.response["Error"]["Code"] in allowed_errors
+    result = Archive(cleaner, bucket).sweep(datetime.now(timezone.utc))
+    assert result["deleted"] == 1, result
+    assert root.head_object(
+        Bucket=bucket, Key=stored["key"], VersionId=stored["version_id"]
+    )
+    assert list(Archive(reader, bucket).export(now - timedelta(seconds=1))) == [event]

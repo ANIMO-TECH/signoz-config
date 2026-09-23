@@ -227,7 +227,7 @@ def main(argv=None):
             errors = 0
             if journal:
                 try:
-                    expired = journal.expire(now())
+                    expired = journal.expire(now(), tailer.cursor_inventory())
                     if expired:
                         emit("expired_unarchived_events", count=expired)
                     stats = tailer.poll(now())

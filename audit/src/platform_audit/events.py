@@ -234,7 +234,7 @@ def _route(platform, path, method, include_reads):
         return "ui.interaction", {"type": "unknown", "id": None}, path
     # Keep collection/action constants only; never retain arbitrary path segments.
     m = re.fullmatch(
-        r"/(?:api/v\d+/)?(dashboards|rules|channels|users|roles|applications|services|servers|deployments|deploy)(?:/([^/]+))?(?:/(start|stop|restart|cancel|lock|envs|rollback))?/?",
+        r"/(?:api/v\d+/)?(dashboards|rules|channels|users|roles|pats|domains|licenses|applications|services|servers|deployments|deploy)(?:/([^/]+))?(?:/(start|stop|restart|cancel|lock|envs|rollback))?/?",
         path,
     )
     if not m:
@@ -254,6 +254,9 @@ def _route(platform, path, method, include_reads):
         "channels": "channel",
         "users": "user",
         "roles": "role",
+        "pats": "api_key",
+        "domains": "domain",
+        "licenses": "license",
         "applications": "application",
         "services": "service",
         "servers": "server",

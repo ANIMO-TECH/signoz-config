@@ -101,3 +101,48 @@ def test_observed_truncation_resets_incomplete_discard_state(tmp_path):
         path.write_bytes(LINE)
         r = t.poll(NOW)
         assert r["truncations"] == 1 and r["events"] == 1
+
+
+def test_month_long_restart_does_not_rearchive_acknowledged_file(tmp_path):
+    path = tmp_path / "app.log"
+    path.write_bytes(LINE)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        assert t.poll(NOW)["events"] == 1
+        j.ack(j.prepare(NOW)["id"])
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        j.expire(NOW + timedelta(days=31))
+        assert t.poll(NOW + timedelta(days=31))["events"] == 0
+
+
+def test_inventory_preserves_live_and_unavailable_sources_but_prunes_absent_rotation(
+    tmp_path,
+):
+    path = tmp_path / "app.log"
+    path.write_bytes(LINE)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        t.poll(NOW)
+        j.ack(j.prepare(NOW)["id"])
+        later = NOW + timedelta(days=31)
+        j.accept("jobs-prod/999/999/stale", 1, None, NOW)
+        j.expire(later, t.cursor_inventory())
+        assert t.poll(later)["events"] == 0
+        assert j.offset("jobs-prod/999/999/stale") == 0
+        assert j.db.execute("SELECT count(*) FROM cursor").fetchone()[0] == 1
+        # A missing mount is not evidence that its historical files were rotated.
+        hidden = tmp_path / "temporarily-unmounted"
+        path.rename(hidden)
+        j.expire(later + timedelta(days=31), t.cursor_inventory())
+        hidden.rename(path)
+        assert t.poll(later + timedelta(days=31))["events"] == 0
+
+
+def test_inventory_cursor_pruning_is_paginated(tmp_path):
+    with Journal(tmp_path / "j.db") as j:
+        for number in range(600):
+            j.accept(f"source/1/{number}/signature", 1, None, NOW)
+        j.expire(NOW + timedelta(days=31), ({"source/1/599/"}, set()))
+        assert j.db.execute("SELECT count(*) FROM cursor").fetchone()[0] == 1
+        assert j.offset("source/1/599/signature") == 1
