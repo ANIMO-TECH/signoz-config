@@ -9,5 +9,6 @@ RUN sha256sum -c /tmp/platform-audit/base-files.sha256 \
  && php -l app/Providers/AppServiceProvider.php \
  && php -l app/Jobs/ApplicationDeploymentJob.php \
  && php -l bootstrap/helpers/applications.php \
+ && php -l config/logging.php \
  && rm -rf /tmp/platform-audit
 USER www-data

@@ -26,9 +26,9 @@ docker build -t signoz-audit:v0.97.1-audit.1 audit-producers/signoz
 docker build -t coolify-audit:4.3.23-audit.1 audit-producers/coolify
 ```
 
-Coolify 构建先验证官方镜像内三个修改文件的 SHA256，再应用补丁；版本漂移直接失败。CI 对上游源码执行 apply --check，并在官方运行时依赖中测试 Livewire hook、真实 Eloquent SQLite save/delete、事务未提交标记和日志失败隔离。SigNoz 执行中间件 race 测试、完整 enterprise 二进制构建和 version 启动检查。CI 不推送镜像、不连接生产、不触发部署。
+Coolify 构建先验证官方镜像内四个修改文件的 SHA256，再应用补丁；版本漂移直接失败。CI 对上游源码执行 apply --check，并在官方运行时依赖中测试 Livewire hook、真实 Eloquent SQLite save/delete、事务未提交标记和日志失败隔离。SigNoz 执行中间件 race 测试、完整 enterprise 二进制构建和 version 启动检查。CI 不推送镜像、不连接生产、不触发部署。
 
-`coolify/compose.override.yaml`、`signoz/compose.override.yaml` 是实际可合并的发布覆盖文件。发布须先在隔离实例验证，使用已测试镜像 digest，再对已确认的生产 Compose 合并；保留原镜像 digest 即可回滚。Coolify 发布前要复制/保留现有 storage/logs 并创建 UID/GID 9999 可写的 `/data/platform-audit/coolify`（不可直接挂载空目录遮掉旧日志）；本轮没有执行这些动作。LOG_AUDIT_DAYS=30 是本地滚动上限，独立归档由原 PR 的专用清理权限按接收时间清理。
+`coolify/compose.override.yaml`、`signoz/compose.override.yaml` 是实际可合并的发布覆盖文件。发布须先在隔离实例验证，使用已测试镜像 digest，再对已确认的生产 Compose 合并；保留原镜像 digest 即可回滚。Coolify 发布前要创建 UID/GID 9999 可写的 `/data/platform-audit/coolify`，仅挂到新增 storage/audit 目录，通过 LOG_AUDIT_PATH 指向专用 audit 文件；原 storage/logs 不被覆盖。需保留并单独只读补采原 audit 文件，避免切换时遗漏。本轮没有执行这些动作。LOG_AUDIT_DAYS=30 是本地滚动上限，独立归档由原 PR 的专用清理权限按接收时间清理。
 
 ## 接到归档
 

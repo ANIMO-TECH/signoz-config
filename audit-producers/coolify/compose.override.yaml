@@ -5,5 +5,6 @@ services:
     environment:
       LOG_AUDIT_DAYS: '30'
       LOG_AUDIT_LEVEL: info
+      LOG_AUDIT_PATH: /var/www/html/storage/audit/audit.log
     volumes:
-      - /data/platform-audit/coolify:/var/www/html/storage/logs
+      - /data/platform-audit/coolify:/var/www/html/storage/audit

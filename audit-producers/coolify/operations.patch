@@ -36,7 +36,7 @@ index 5856791..bfa8744 100644
          $this->configureModels();
 diff --git a/app/Support/PlatformOperationAudit.php b/app/Support/PlatformOperationAudit.php
 new file mode 100644
-index 0000000..1c269c4
+index 0000000..f607f21
 --- /dev/null
 +++ b/app/Support/PlatformOperationAudit.php
 @@ -0,0 +1,134 @@
@@ -129,7 +129,7 @@ index 0000000..1c269c4
 +        }
 +        $attributes = $model->getAttributes();
 +        $id = $attributes['uuid'] ?? $attributes['id'] ?? null;
-+        $changed = array_keys($model->getChanges());
++        $changed = $verb === 'updated' ? array_keys($model->getChanges()) : [];
 +        $changed = array_values(array_filter($changed, fn ($key) => $key !== 'updated_at' && preg_match('/^[a-zA-Z0-9_]{1,80}$/D', $key)));
 +        if ($verb === 'updated' && $changed === []) {
 +            return null;
@@ -187,12 +187,25 @@ index 339a0bc..a4ecf6e 100644
      return [
          'status' => 'queued',
          'message' => 'Deployment queued.',
+diff --git a/config/logging.php b/config/logging.php
+index 05cf8e1..3fbd554 100644
+--- a/config/logging.php
++++ b/config/logging.php
+@@ -135,7 +135,7 @@
+ 
+         'audit' => [
+             'driver' => 'daily',
+-            'path' => storage_path('logs/audit.log'),
++            'path' => env('LOG_AUDIT_PATH', storage_path('logs/audit.log')),
+             'level' => env('LOG_AUDIT_LEVEL', 'info'),
+             'days' => env('LOG_AUDIT_DAYS', 90),
+             'replace_placeholders' => true,
 diff --git a/tests/audit/operation.php b/tests/audit/operation.php
 new file mode 100644
-index 0000000..4888cbe
+index 0000000..81b8224
 --- /dev/null
 +++ b/tests/audit/operation.php
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,75 @@
 +<?php
 +// Real Laravel/Livewire dependencies, isolated in-memory SQLite, no application boot.
 +$events = [];
@@ -254,6 +267,7 @@ index 0000000..4888cbe
 +check(end($events)['ip'] === '192.0.2.42', 'socket peer');
 +$server->delete();
 +check(end($events)['event'] === 'operation.model.deleted', 'delete hook');
++check(end($events)['changed_fields'] === [], 'delete must not reuse previous update changes');
 +$appModel = new class { public function getAttributes() { return ['uuid'=>'app-1','git_repository'=>'https://github.com/ANIMO-TECH/jobscheduler.git']; } };
 +$run = new class { public function getAttributes() { return ['deployment_uuid'=>'deploy-1','commit'=>str_repeat('a',40),'pull_request_id'=>0]; } };
 +Audit::deployment($appModel, $run, 'commit_resolved');
