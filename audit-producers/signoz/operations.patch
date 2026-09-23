@@ -49,7 +49,7 @@ index 8a967a5..7b61753 100644
  		if _, ok := middleware.excludedRoutes[path]; ok {
 diff --git a/pkg/http/middleware/operation_audit.go b/pkg/http/middleware/operation_audit.go
 new file mode 100644
-index 0000000..2119472
+index 0000000..74c526e
 --- /dev/null
 +++ b/pkg/http/middleware/operation_audit.go
 @@ -0,0 +1,97 @@
@@ -72,7 +72,7 @@ index 0000000..2119472
 +)
 +
 +var auditID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
-+var auditRoutes = regexp.MustCompile(`^/api/v[0-9]+/(dashboards|rules|channels|downtime_schedules|settings|explorer/views|user|users|org|orgs|invite|login|logout|register|resetPassword|changePassword|apiKeys|roles|integrations|cloud-integrations|logs/pipelines|logs/fields|traces/fields)(/|$)`)
++var auditRoutes = regexp.MustCompile(`^/api/v[0-9]+/(dashboards|rules|channels|downtime_schedules|settings|explorer/views|user|users|org|orgs|invite|login|logout|register|resetPassword|changePassword|pats|domains|licenses|roles|integrations|cloud-integrations|logs/pipelines|logs/fields|traces/fields)(/|$)`)
 +
 +type operationAudit struct {
 +	queue   chan []any
@@ -129,7 +129,7 @@ index 0000000..2119472
 +		peer = ""
 +	}
 +	id := ""
-+	for _, key := range []string{"id", "viewId", "ruleId", "channelId"} {
++	for _, key := range []string{"id", "viewId", "ruleId", "channelId", "accountId", "serviceId", "integrationId"} {
 +		if value := mux.Vars(req)[key]; auditID.MatchString(value) {
 +			id = value
 +			break
@@ -152,10 +152,10 @@ index 0000000..2119472
 +}
 diff --git a/pkg/http/middleware/operation_audit_test.go b/pkg/http/middleware/operation_audit_test.go
 new file mode 100644
-index 0000000..7352ae9
+index 0000000..4085d06
 --- /dev/null
 +++ b/pkg/http/middleware/operation_audit_test.go
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,147 @@
 +package middleware
 +
 +import (
@@ -274,5 +274,32 @@ index 0000000..7352ae9
 +	}
 +	if len(a.queue) != 1 || a.dropped.Load() != 9999 {
 +		t.Fatal("unbounded queue or wrong drop count")
++	}
++}
++
++// Contracts from v0.97.1 RegisterRoutes, not guessed endpoint names.
++func TestVerifiedMutationRouteCoverage(t *testing.T) {
++	for _, tc := range []struct{ method, route string }{
++		{"POST", "/api/v1/pats"}, {"PUT", "/api/v1/pats/{id}"}, {"DELETE", "/api/v1/pats/{id}"},
++		{"POST", "/api/v1/domains"}, {"PUT", "/api/v1/domains/{id}"}, {"DELETE", "/api/v1/domains/{id}"},
++		{"POST", "/api/v3/licenses"}, {"PUT", "/api/v3/licenses"},
++	} {
++		t.Run(tc.method+tc.route, func(t *testing.T) {
++			if operationFields(httptest.NewRequest(tc.method, "/", nil), tc.route) == nil {
++				t.Fatal("registered mutation omitted")
++			}
++		})
++	}
++}
++
++func TestCloudConfigurationResourceUsesItsRegisteredPathVariable(t *testing.T) {
++	req := mux.SetURLVars(httptest.NewRequest("POST", "/", nil), map[string]string{"accountId": "account-1", "token": "secret"})
++	fields := fieldsMap(operationFields(req, "/api/v1/cloud-integrations/{cloudProvider}/accounts/{accountId}/config"))
++	if fields["resource_id"] != "account-1" {
++		t.Fatal(fields)
++	}
++	req = mux.SetURLVars(req, map[string]string{"token": "secret"})
++	if fieldsMap(operationFields(req, "/api/v1/pats"))["resource_id"] != "" {
++		t.Fatal("credential value logged as resource ID")
 +	}
 +}

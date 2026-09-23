@@ -42,3 +42,6 @@ Coolify 构建先验证官方镜像内四个修改文件的 SHA256，再应用�
 配套业务端：[JobScheduler PR #5](https://github.com/ANIMO-TECH/jobscheduler/pull/5)。
 
 发布覆盖文件显式启用审计所需的 info 级别；SigNoz 使用现有日志器，因此运行时禁用 info 也会禁用新事件。发布验收需核对日志输出，不能只看配置文件。
+
+
+2026-09-23 补充审查：API Key 的真实路由为 `/api/v1/pats`，现已覆盖其创建/更新/撤销，以及 `/domains` 和 `/api/v3/licenses` 的修改请求。路径里的 ID 是模型 ID，不是 Token；云集成 accountId/serviceId/integrationId 同样保留，未知 Token 参数不记录。对应固定版本 `pkg/query-service/app/http_handler.go` 和 `ee/query-service/app/api/api.go`，不能凭资源名猜接口。
