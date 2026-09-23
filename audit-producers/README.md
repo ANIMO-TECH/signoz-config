@@ -38,3 +38,5 @@ Coolify 构建先验证官方镜像内三个修改文件的 SHA256，再应用�
 - 先部署 PR #6 的新增 producer schema 解析，再启用生产端镜像。验收必须做一笔经授权的测试操作，检查 operation/deployment ID 从平台输出到对象锁归档能贯通；本轮只在隔离测试运行，没有线上操作验收。
 
 尚未核实生产镜像替换、日志目录 UID/ACL、归档 bucket 和跨主机挂载；这些是待发布条件，不能据本 PR 声称线上已覆盖。
+
+配套业务端：[JobScheduler PR #5](https://github.com/ANIMO-TECH/jobscheduler/pull/5)。

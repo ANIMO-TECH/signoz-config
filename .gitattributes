@@ -1,0 +1,2 @@
+# Patch context preserves upstream indentation and blank-line markers.
+audit-producers/**/*.patch -whitespace

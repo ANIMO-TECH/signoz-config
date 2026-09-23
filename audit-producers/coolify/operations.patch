@@ -189,7 +189,7 @@ index 339a0bc..a4ecf6e 100644
          'message' => 'Deployment queued.',
 diff --git a/tests/audit/operation.php b/tests/audit/operation.php
 new file mode 100644
-index 0000000..91d2477
+index 0000000..4888cbe
 --- /dev/null
 +++ b/tests/audit/operation.php
 @@ -0,0 +1,74 @@
@@ -229,7 +229,7 @@ index 0000000..91d2477
 +$capsule->setEventDispatcher($dispatcher);
 +$capsule->bootEloquent();
 +$capsule->getConnection()->getSchemaBuilder()->create('servers', function ($table) {
-+    $table->increments('id'); $table->string('uuid'); $table->string('name'); $table->timestamps();
++    $table->increments('id'); $table->string('uuid'); $table->string('name'); $table->timestamps(); $table->softDeletes();
 +});
 +Audit::register();
 +// Skip model boot side effects while using its real Eloquent save/delete behavior.
@@ -266,4 +266,4 @@ index 0000000..91d2477
 +$finish = $bus->trigger('call', $component, 'delete', []);
 +$finish($value);
 +check($value === 'unchanged-return', 'logging failure isolation');
-+echo "Coolify operation integration: 14 checks passed\n";
++echo "Coolify operation integration: checks passed\n";

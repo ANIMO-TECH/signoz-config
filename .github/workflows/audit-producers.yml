@@ -34,5 +34,5 @@ jobs:
         run: docker build -t signoz-audit:ci audit-producers/signoz
       - name: Binary startup and release override
         run: |
-          docker run --rm --entrypoint /root/signoz signoz-audit:ci version
+          docker run --rm --entrypoint /root/signoz signoz-audit:ci --version
           SIGNOZ_AUDIT_IMAGE=signoz-audit:ci docker compose -f audit-producers/signoz/compose.override.yaml config --quiet
