@@ -17,7 +17,7 @@ jobs:
       - name: Build against the actual upstream runtime
         run: docker build -t coolify-audit:ci audit-producers/coolify
       - name: Test Livewire and Eloquent with runtime dependencies
-        run: docker run --rm --entrypoint php coolify-audit:ci tests/audit/operation.php
+        run: docker run --rm --entrypoint php coolify-audit:ci -d display_errors=1 -d log_errors=0 -d error_reporting=32767 tests/audit/operation.php
       - name: Validate release override
         run: COOLIFY_AUDIT_IMAGE=coolify-audit:ci docker compose -f audit-producers/coolify/compose.override.yaml config --quiet
   signoz:
