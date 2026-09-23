@@ -185,6 +185,8 @@ def test_semantic_producer_events_keep_business_outcome_and_no_secrets():
     )
     event = normalize("jobscheduler", json.dumps(raw), NOW)
     assert event["outcome"] == "saved_schedule_failed" and event["status_code"] == 303
+    raw["scheduled"] = None
+    assert normalize("jobscheduler", json.dumps(raw), NOW)["scheduled"] is None
     assert event["actor"] is None and event["resource"]["id"] == "23"
     assert event["target_environment"] == "test" and event["changed_fields"] == [
         "enabled"

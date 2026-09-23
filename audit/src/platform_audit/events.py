@@ -153,7 +153,9 @@ def _operation(e, obj):
     if _choice(obj.get("outcome"), outcomes):
         e["outcome"] = obj["outcome"]
     for key in ("saved", "scheduled", "enabled"):
-        if type(obj.get(key)) is bool:
+        if type(obj.get(key)) is bool or (
+            key == "scheduled" and key in obj and obj[key] is None
+        ):
             e[key] = obj[key]
     for key in ("status_code", "audit_dropped_total"):
         value = obj.get(key)
