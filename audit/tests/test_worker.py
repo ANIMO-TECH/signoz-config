@@ -1,0 +1,198 @@
+from datetime import datetime, timedelta, timezone
+
+from platform_audit.store import Journal
+from platform_audit.worker import Tailer
+
+NOW = datetime(2026, 9, 23, tzinfo=timezone.utc)
+LINE = b'INFO: 10.0.0.1:1 - "POST /jobs/12/run HTTP/1.1" 303 See Other\n'
+
+
+def setup(tmp_path):
+    sources = [
+        dict(
+            id="jobs-prod",
+            platform="jobscheduler",
+            environment="prod",
+            path=str(tmp_path / "*.log*"),
+        )
+    ]
+    return sources
+
+
+def test_partial_write_restart_and_rename_rotation_do_not_duplicate(tmp_path):
+    path = tmp_path / "app.log"
+    path.write_bytes(LINE + LINE[:10])
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        assert t.poll(NOW)["events"] == 1
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        assert t.poll(NOW)["events"] == 0
+        with path.open("ab") as f:
+            f.write(LINE[10:])
+        assert t.poll(NOW)["events"] == 1
+        path.rename(tmp_path / "app.log.1")
+        path.write_bytes(LINE)
+        assert t.poll(NOW)["events"] == 1
+        assert len(j.batch_events(j.prepare(NOW)["id"])) == 3
+
+
+def test_huge_line_makes_bounded_progress_without_interpreting_fragments(tmp_path):
+    path = tmp_path / "app.log"
+    path.write_bytes(b"x" * 2500000 + b"\n" + LINE)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        results = [t.poll(NOW) for _ in range(4)]
+        assert sum(x["events"] for x in results) == 1
+        assert sum(x["oversized"] for x in results) > 0
+
+
+def test_source_symlink_never_reads_unapproved_file(tmp_path):
+    secret = tmp_path / "not-a-log"
+    secret.write_bytes(LINE)
+    (tmp_path / "app.log").symlink_to(secret)
+    with Journal(tmp_path / "j.db") as j:
+        result = Tailer(j, setup(tmp_path)).poll(NOW)
+        assert result["events"] == 0 and result["unavailable"] == 1
+
+
+def test_retention_does_not_mutate_prepared_batch_during_retry(tmp_path):
+    with Journal(tmp_path / "j.db") as j:
+        e = {"observed_at": NOW.isoformat(), "actor": None}
+        j.accept("old", 1, e, NOW - timedelta(days=30) + timedelta(seconds=5))
+        j.accept("fresh", 1, e, NOW - timedelta(days=30) + timedelta(seconds=6))
+        batch = j.prepare(NOW)
+        before = j.batch_events(batch["id"])
+        assert j.expire(NOW + timedelta(seconds=5.5)) == 0
+        assert j.batch_events(batch["id"]) == before
+        assert j.expire(NOW + timedelta(seconds=7)) == 2
+
+
+def test_unterminated_oversized_line_cannot_turn_its_suffix_into_an_operation(tmp_path):
+    path = tmp_path / "app.log"
+    path.write_bytes(b"x" * 70000)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        assert t.poll(NOW)["events"] == 0
+        with path.open("ab") as f:
+            f.write(LINE + LINE)
+        assert (
+            t.poll(NOW)["events"] == 1
+        )  # First apparent LINE was still the discarded suffix.
+
+
+def test_poll_budget_is_global_and_files_do_not_starve(tmp_path):
+    (tmp_path / "a.log").write_bytes(LINE * 3)
+    (tmp_path / "b.log").write_bytes(LINE)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path), max_lines=1)
+        assert t.poll(NOW)["events"] == 1
+        assert t.poll(NOW)["events"] == 1
+        # Second poll starts the second file instead of exhausting the busy first one.
+        assert len(list(j.db.execute("SELECT * FROM cursor"))) == 2
+
+
+def test_observed_truncation_resets_incomplete_discard_state(tmp_path):
+    path = tmp_path / "app.log"
+    path.write_bytes(LINE + b"x" * 70000)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        assert t.poll(NOW)["events"] == 1
+        path.write_bytes(LINE)
+        r = t.poll(NOW)
+        assert r["truncations"] == 1 and r["events"] == 1
+
+
+def test_month_long_restart_does_not_rearchive_acknowledged_file(tmp_path):
+    path = tmp_path / "app.log"
+    path.write_bytes(LINE)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        assert t.poll(NOW)["events"] == 1
+        j.ack(j.prepare(NOW)["id"])
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        j.expire(NOW + timedelta(days=31))
+        assert t.poll(NOW + timedelta(days=31))["events"] == 0
+
+
+def test_inventory_preserves_live_and_unavailable_sources_but_prunes_absent_rotation(
+    tmp_path,
+):
+    path = tmp_path / "app.log"
+    path.write_bytes(LINE)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        t.poll(NOW)
+        j.ack(j.prepare(NOW)["id"])
+        later = NOW + timedelta(days=31)
+        j.accept("jobs-prod/999/999/stale", 1, None, NOW)
+        j.expire(later, t.cursor_inventory())
+        assert t.poll(later)["events"] == 0
+        assert j.offset("jobs-prod/999/999/stale") == 0
+        assert j.db.execute("SELECT count(*) FROM cursor").fetchone()[0] == 1
+        # A missing mount is not evidence that its historical files were rotated.
+        hidden = tmp_path / "temporarily-unmounted"
+        path.rename(hidden)
+        j.expire(later + timedelta(days=31), t.cursor_inventory())
+        hidden.rename(path)
+        assert t.poll(later + timedelta(days=31))["events"] == 0
+
+
+def test_inventory_cursor_pruning_is_paginated(tmp_path):
+    with Journal(tmp_path / "j.db") as j:
+        for number in range(600):
+            j.accept(f"source/1/{number}/signature", 1, None, NOW)
+        j.expire(NOW + timedelta(days=31), ({"source/1/599/"}, set()))
+        assert j.db.execute("SELECT count(*) FROM cursor").fetchone()[0] == 1
+        assert j.offset("source/1/599/signature") == 1
+
+
+def test_oversubscribed_source_does_not_block_other_platforms(tmp_path):
+    busy = tmp_path / "busy"
+    busy.mkdir()
+    for i in range(257):
+        (busy / f"{i}.log").write_bytes(LINE)
+    healthy = tmp_path / "healthy.log"
+    healthy.write_bytes(LINE)
+    sources = [
+        dict(
+            id="oversubscribed",
+            platform="coolify",
+            environment="prod",
+            path=str(busy / "*.log"),
+        ),
+        dict(
+            id="healthy", platform="jobscheduler", environment="prod", path=str(healthy)
+        ),
+    ]
+    with Journal(tmp_path / "j.db") as j:
+        result = Tailer(j, sources).poll(NOW)
+        assert result["events"] == 1 and result["unavailable"] == 1
+
+
+def test_unverified_receipt_recovery_preserves_original_time_and_full_spool(tmp_path):
+    path = tmp_path / "app.log"
+    path.write_bytes(LINE)
+    with Journal(tmp_path / "j.db") as j:
+        t = Tailer(j, setup(tmp_path))
+        old = NOW - timedelta(days=31)
+        assert t.poll(old, clock_verified=False)["events"] == 1
+        before = j.db.execute("SELECT id,payload FROM event").fetchone()
+        j.max_bytes = j.db.execute(
+            "SELECT value FROM counters WHERE key='bytes'"
+        ).fetchone()[0]
+        assert j.recover_unverified_time(NOW) == 1
+        assert j.expire(NOW, t.cursor_inventory()) == 0
+        batch = j.prepare(NOW)
+        events = j.batch_events(batch["id"])
+        assert events[0]["event_id"] == before[0]
+        assert events[0]["receipt_time_status"] == "recovered"
+        assert events[0]["unverified_observed_at"].startswith(old.date().isoformat())
+        assert events[0]["observed_at"].startswith(NOW.date().isoformat())
+        assert (
+            j.db.execute("SELECT value FROM counters WHERE key='bytes'").fetchone()[0]
+            <= j.max_bytes
+        )
+        assert j.recover_unverified_time(NOW + timedelta(days=1)) == 0
+        assert j.batch_events(batch["id"]) == events

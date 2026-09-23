@@ -1,0 +1,49 @@
+state_dir = "/state"
+max_spool_bytes = 67108864
+github_repositories = ["ANIMO-TECH/DotAI", "ANIMO-TECH/jobscheduler", "ANIMO-TECH/signoz-config"]
+
+[archive]
+# Dedicated versioned Object Lock bucket; shared application buckets are not suitable.
+bucket = "REPLACE_WITH_AUDIT_BUCKET"
+prefix = "platform-audit/"
+
+# Optional searchable copy. Configure the existing collector's actual endpoint;
+# failure here does NOT block archiving. Its own storage TTL must also be 30 days.
+# [index]
+# endpoint = "https://YOUR_OTLP_COLLECTOR/v1/logs"
+# allow_http = false
+# retention_confirmed_days = 30  # Must match VERIFIED destination TTL, never an assumption.
+
+# Mount only the required log files/directories, read-only. Never mount docker.sock.
+# Docker JSON envelopes and timestamp-prefixed access logs are supported.
+[[sources]]
+id = "jobscheduler-prod"
+platform = "jobscheduler"
+environment = "prod"
+path = "/sources/jobscheduler/*.log*"
+include_reads = false
+
+[[sources]]
+id = "coolify-native"
+platform = "coolify"
+environment = "prod"
+path = "/sources/coolify/audit*.log"
+
+# Optional existing Traefik JSON access logs. Needed to see /livewire/update
+# interactions where Coolify's native semantic audit does not cover the action.
+# They do not disclose what the UI action did; these are labelled ui.interaction.
+# Enable the source only after proving the proxy already writes this file.
+# [[sources]]
+# id = "coolify-access"
+# platform = "coolify"
+# environment = "prod"
+# path = "/sources/coolify-access/*.log*"
+
+[[sources]]
+id = "signoz-prod"
+platform = "signoz"
+environment = "prod"
+path = "/sources/signoz/*.log*"
+# Patched producers emit platform.operation with method/object/optional actor.
+# Unpatched v0.97.1 logs may omit HTTP method. Such records are labelled *.request,
+# not falsely identified as edits; native actor is null unless evidenced.

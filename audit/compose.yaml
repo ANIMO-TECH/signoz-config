@@ -1,0 +1,60 @@
+services:
+  collector:
+    build: .
+    image: internal-platform-audit:0.1.0
+    command: ["collect", "--config", "/etc/audit/config.toml"]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 192m
+    cpus: 0.5
+    pids_limit: 64
+    environment:
+      AWS_SHARED_CREDENTIALS_FILE: /run/secrets/archive_writer
+      AWS_DEFAULT_REGION: ${AUDIT_S3_REGION:-us-east-1}
+      AUDIT_S3_ENDPOINT: ${AUDIT_S3_ENDPOINT:-}
+    secrets: [archive_writer]
+    volumes:
+      - ./config.toml:/etc/audit/config.toml:ro
+      - ${AUDIT_SOURCE_DIR:?Set a dedicated log mount directory}:/sources:ro
+      - collector-state:/state
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+
+  retention:
+    build: .
+    image: internal-platform-audit:0.1.0
+    command: ["cleanup", "--config", "/etc/audit/config.toml"]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    environment:
+      AWS_SHARED_CREDENTIALS_FILE: /run/secrets/archive_cleaner
+      AWS_DEFAULT_REGION: ${AUDIT_S3_REGION:-us-east-1}
+      AUDIT_S3_ENDPOINT: ${AUDIT_S3_ENDPOINT:-}
+    secrets: [archive_cleaner]
+    volumes:
+      - ./config.toml:/etc/audit/config.toml:ro
+      - retention-state:/state
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+
+secrets:
+  archive_writer:
+    file: ${AUDIT_WRITER_CREDENTIALS_FILE:?Use a write-only archive role}
+  archive_cleaner:
+    file: ${AUDIT_CLEANER_CREDENTIALS_FILE:?Use a separate retention role}
+volumes:
+  collector-state:
+  retention-state:

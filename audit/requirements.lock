@@ -1,0 +1,8 @@
+# Production dependency versions used by the verified local build.
+boto3==1.43.99
+botocore==1.43.99
+jmespath==1.1.0
+python-dateutil==2.9.0.post0
+s3transfer==0.19.2
+six==1.17.0
+urllib3==2.8.0
